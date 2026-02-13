@@ -1,5 +1,3 @@
-# AI Agent Rules
-
 <!-- gitnexus:start -->
 # GitNexus MCP
 
