@@ -21,7 +21,6 @@ import { hybridSearch } from '../core/search/hybrid-search.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at server startup — crashes on unsupported Node ABI versions (#89)
 import { LocalBackend } from '../mcp/local/local-backend.js';
-import { mountMCPEndpoints } from './mcp-http.js';
 
 const buildGraph = async (): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   const nodes: GraphNode[] = [];
@@ -128,7 +127,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)
   const backend = new LocalBackend();
   await backend.init();
-  const cleanupMcp = mountMCPEndpoints(app, backend);
 
   // Helper: resolve a repo by name from the global registry, or default to first
   const resolveRepo = async (repoName?: string) => {
@@ -350,7 +348,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Graceful shutdown — close Express + LadybugDB cleanly
   const shutdown = async () => {
     server.close();
-    await cleanupMcp();
     await closeLbug();
     await backend.disconnect();
     process.exit(0);

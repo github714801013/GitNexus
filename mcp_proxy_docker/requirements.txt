@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+portalocker
+python-multipart
+# requests is usually included with many libs, but good for testing/extensibility
+requests

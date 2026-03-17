@@ -1,0 +1,12 @@
+.git
+node_modules
+gitnexus/node_modules
+gitnexus-web/node_modules
+mcp_proxy_docker/venv
+__pycache__
+*.pyc
+.planning
+.cursor
+.windsurf
+eval/
+.sisyphus/
