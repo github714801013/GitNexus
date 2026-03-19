@@ -51,119 +51,76 @@ The goal is not to build a compiler. The goal is to support high-value static an
 - Fixpoint iterates until stable (max 10 iterations), enabling chains like `getUser() → .address → .getCity() → city.save()`
 - Reverse-order copy chains now resolve (`const b = a; const a: User = x` → both resolve)
 
+### Milestone D — Completeness ✅
+
+**Shipped in** `feat/type-resolution-milestone-d` (PR #387). Consolidated original Phases 10–13 into 3 balanced phases.
+
+#### Phase A: Fixpoint Completeness ✅
+
+- Post-fixpoint for-loop replay (ex-9B): `pendingForLoops` collection + replay after fixpoint resolves iterable types
+- Object destructuring via `fieldAccess` items (TS/JS `object_pattern`, Rust `struct_pattern`) — no new `destructure` PendingAssignment variant needed
+- Extracted `resolveFixpointBindings()` helper with exhaustive switch + `classDefCache` memoization
+
+#### Phase B: Inheritance & Receivers ✅
+
+- `BuildTypeEnvOptions` interface replacing positional params for `buildTypeEnv`
+- Heritage pre-pass constructing `parentMap` from tree-sitter query matches (not graph edges — heritage-processor runs in parallel)
+- MRO-aware `walkParentChain()` (depth 5, cycle-safe BFS) for `resolveFieldType` and `resolveMethodReturnType`
+- `this`/`self`/`$this`/`Me` receiver substitution via `substituteThisReceiver` hook
+- Go `inc_statement`/`dec_statement` write-access queries
+
+#### Phase C: Branch-Sensitive Narrowing ✅
+
+- Null-check narrowing (`!= null`, `!== undefined`, `is not null`) via position-indexed `patternOverrides`
+- Supported for TS, Kotlin, C# — renamed `PATTERN_BRANCH_TYPES` → `NARROWING_BRANCH_TYPES`
+- Bug fix: Kotlin narrowing required 3 fixes in `jvm.ts` (AST node type `equality_expression`, anonymous `null` node, `nullable_type` parameter fallback)
+
+#### Deferred from Milestone D
+
+- **Type predicates (13A):** Cross-function analysis for niche TS `x is User` feature — deferred
+- **Swift parity (11D):** tree-sitter-swift Node 22 issues — all Swift work consolidated to Phase S
+- **Positional destructuring (12C):** Python/Kotlin/C#/C++ tuple-position-to-field mapping — deferred
+- **Discriminated union narrowing (13C):** Needs tagged union metadata not in SymbolTable — deferred
+
+#### Integration Test Coverage
+
+17 fixture directories, 23 describe blocks, 705 lines of test code covering all 11 languages:
+- Grandparent MRO (depth-2 C→B→A): TS, JS, Kotlin, C#, C++, Java, PHP, Python, Ruby
+- Object destructuring: TS, JS
+- Struct destructuring: Rust
+- Post-fixpoint for-loop replay: TS, JS
+- Go inc/dec write access
+- Null-check narrowing: TS, C#, Kotlin
+
 ---
 
 ## Open Phases
 
-### Phase 10: Loop-Fixpoint Bridge
+### Phase P: Polymorphism & Overloading
 
-**Supersedes Phase 9B.** For-loop element bindings run during `walk()` before the fixpoint. Variables typed by the fixpoint are invisible to for-loop extraction.
+**Plan:** `docs/plans/2026-03-19-feat-polymorphism-overloading-type-resolution-plan.md`
 
-**Problem:**
-```typescript
-const users = getUsers();       // fixpoint: users → User[]
-for (const u of users) {        // walk-time: users untyped → u unresolved
-  u.save();                     // missed CALLS edge
-}
-```
+Four incremental phases:
+1. **Parameter type metadata** — extend `SymbolDefinition` with `parameterTypes: string[]` extracted during parsing
+2. **Overload disambiguation** — filter overloaded methods by argument literal types at call sites
+3. **Constructor-visible virtual dispatch** — `Base b = new Derived(); b.method()` resolves to `Derived#method` when constructor type is a known subclass
+4. **Covariant return type awareness** — prefer child's return type over inherited definition
 
-**Approach:** Post-fixpoint for-loop replay. During `walk()`, store for-loop AST nodes whose iterable is unresolved. After fixpoint completes, replay `extractForLoopBinding` on those nodes using the now-resolved iterable types.
+Languages benefiting: Java, Kotlin, C#, C++, TypeScript (overloading). All OOP languages (virtual dispatch).
 
-**Scope:**
-- Infrastructure: `pendingForLoops` collection + replay (~20 lines in `type-env.ts`)
-- No extractor changes — reuses existing `extractForLoopBinding`
-- Swift: add for-loop element binding (currently missing)
-- Nested for-loops with field-dependent iterables are NOT replayed (handled by call-processor chain resolution)
-
-**Risks:** AST node lifetime (safe — nodes valid within `buildTypeEnv` lifetime).
-
-**Impact: High | Effort: Low-Medium**
+**Impact: High | Effort: High**
 
 ---
 
-### Phase 11: Inheritance & this/self
+### Phase S: Swift Parity
 
-Four items sharing infrastructure.
+**Blocked on** tree-sitter-swift Node 22 compatibility.
 
-#### 11A: MRO-aware field and method lookups
-
-**Problem:** `lookupFieldByOwner` only finds direct fields. Inherited fields (`Admin extends User`, field on `User`) don't resolve.
-
-**Approach:** Pre-compute `parentMap: Map<nodeId, nodeId[]>` from EXTENDS + IMPLEMENTS edges. Pass to `buildTypeEnv`. Update `resolveFieldType` and `resolveMethodReturnType` to walk parent chain on miss (max depth 5, cycle-safe, first-match-wins for diamond inheritance).
-
-Includes IMPLEMENTS edges so interface-declared fields/methods resolve (Java, Kotlin, C#).
-
-#### 11B: this/self in fixpoint
-
-**Problem:** `this.field` and `this.method()` emit pending items with `receiver: 'this'`, but `scopeEnv.get('this')` returns `undefined`.
-
-**Approach:** At collection time during `walk()`, resolve the enclosing class name immediately via `findEnclosingClassName()` and substitute it as the receiver. Covers both `fieldAccess` and `methodCallResult`. No fixpoint changes needed. 5-10 lines per extractor.
-
-#### 11C: Go inc/dec write access
-
-**Problem:** `obj.field++`/`obj.field--` produce `inc_statement`/`dec_statement` — write-access tracking doesn't see them.
-
-**Approach:** Add these node types to call-processor write detection (~5 lines).
-
-#### 11D: Swift assignment chains
-
-**Problem:** Swift has no `extractPendingAssignment` — copy/callResult/fieldAccess/methodCallResult don't work.
-
-**Approach:** Implement `extractPendingAssignment` for Swift covering all 4 binding kinds.
-
-**Risks:** Performance of parent chain walking in fixpoint (bounded by `n_pending × depth × iterations`). Interface method ambiguity (mitigated by checking direct class first, parents on miss).
-
-**Impact: Medium-High | Effort: Medium**
-
----
-
-### Phase 12: Destructuring
-
-**Problem:** `const { address, name } = user` produces no bindings — LHS is a pattern node, not an identifier.
-
-**Approach:** Add `{ kind: 'destructure', source, bindings: [{ varName, fieldName }] }` to `PendingAssignment`. In the fixpoint, when source's type resolves, look up each field via `lookupFieldByOwner` and bind each variable.
-
-Works without Phase 11A (direct fields only). Phase 11A MRO enhances it to resolve inherited fields too.
-
-**Phased delivery:**
-
-| Sub-phase | Scope | Languages |
-|-----------|-------|-----------|
-| **12A** | Object destructuring | TS/JS (`object_pattern`) |
-| **12B** | Struct pattern destructuring | Rust (`struct_pattern`) |
-| **12C** (deferred) | Positional destructuring | Python, Kotlin, C#, C++ — needs tuple-position-to-field mapping |
-
-Skip: computed properties, rest elements, nested destructuring (`{ address: { city } }` — deferred).
-
-**Risks:** Nested destructuring requires recursive resolution (explicitly deferred).
+- For-loop element binding (from Phase 10)
+- Assignment chains: copy, callResult, fieldAccess, methodCallResult (from Phase 11D)
+- `guard let` narrowing (from Phase 13B) — uses scopeEnv path, not `patternOverrides`
 
 **Impact: Medium | Effort: Medium**
-
----
-
-### Phase 13: Branch-Sensitive Narrowing
-
-**Design principle:** Targeted narrowing, not general control-flow analysis. Skip anything that requires a control-flow graph.
-
-**Phased delivery:**
-
-#### 13A: Type predicate functions (TS only)
-
-`function isUser(x: unknown): x is User` — detect `type_predicate` return type. When called in an `if` condition, emit pattern binding for the narrowed parameter.
-
-#### 13B: Nullability narrowing (TS/Kotlin/C#/Swift)
-
-`if (x != null)` → strip nullable wrapper in truthy branch. Uses existing `patternOverrides` mechanism (position-indexed, scope-aware). Swift `guard let` uses standard scopeEnv (narrowing persists for rest of function). Swift work requires Phase 11D (assignment chains) first.
-
-#### 13C: Discriminated union narrowing (deferred)
-
-`if (shape.kind === 'circle')` → needs tagged union metadata not in SymbolTable. Defer.
-
-**What we skip entirely:** Full control-flow graph, arbitrary conditional narrowing, `typeof` guards, exhaustiveness checking.
-
-**Risks:** Scope leakage (mitigated by `patternOverrides` position indexing). Swift `guard let` needs scopeEnv path (different from `patternOverrides`).
-
-**Impact: Medium | Effort: Medium-High**
 
 ---
 
@@ -202,19 +159,14 @@ config.validate();  // missed
 ## Dependency Graph
 
 ```
-Phase 10 (loops) ──────────────────────┐
-                                       │
-Phase 11 (MRO + this + Go + Swift) ───┤
-                                       ├──→ Phase 14 (cross-file)
-Phase 12 (destructuring) ─────────────┤
-                                       │
-Phase 13 (branch narrowing) ───────────┘
+Milestone D (Phases A, B, C) ✅ ──┐
+                                   ├──→ Phase 14 (cross-file)
+Phase P (polymorphism) ───────────┤
+                                   │
+Phase S (Swift parity) ───────────┘
 
-Phases 10–13 are independent of each other.
-  Exception: Phase 13B Swift (guard let) requires Phase 11D (Swift assignment chains).
-  Exception: Phase 12 benefits from Phase 11A (MRO) but works without it.
-Phase 14 depends on all of 10–13 being stable.
-Swift parity threaded through Phases 10–13 incrementally.
+Phase P and Phase S are independent of each other and Phase 14.
+Phase 14 benefits from Phase P (better per-file resolution = fewer cross-file gaps).
 ```
 
 ---
@@ -222,19 +174,11 @@ Swift parity threaded through Phases 10–13 incrementally.
 ## Language-Specific Gaps (remaining)
 
 ### Swift
-- For-loop element binding → Phase 10
-- Assignment chains (copy, callResult, fieldAccess, methodCallResult) → Phase 11D
-- Pattern binding → Phase 13B (`guard let`)
-
-### Go
-- `obj.field++`/`obj.field--` write ACCESSES → Phase 11C
-
-### Rust
-- Struct-pattern field destructuring → Phase 12B
+- For-loop element binding → Phase S
+- Assignment chains (copy, callResult, fieldAccess, methodCallResult) → Phase S
+- `guard let` narrowing → Phase S
 
 ### All languages
-- Inherited field/method resolution → Phase 11A
-- `this`/`self` in fixpoint → Phase 11B
 - Cross-file binding propagation → Phase 14
 
 ---
@@ -253,13 +197,21 @@ Field/property maps, deep chains, mixed chains, stdlib passthroughs.
 
 Unified fixpoint loop, call-result binding, field access binding, method-call-result binding, arbitrary-depth chain propagation.
 
-### Milestone D — Completeness ← **next** (Phases 10–13)
+### Milestone D — Completeness ✅ (Phases A, B, C)
 
-Loop-fixpoint bridge, inheritance walking, `this`/`self` resolution, destructuring, branch narrowing, Swift parity.
+Consolidated Phases 10–13 into 3 balanced phases. Loop-fixpoint bridge, MRO-aware inheritance walking, `this`/`self` resolution, object/struct destructuring, null-check narrowing. Kotlin null-check bug fix. Full 11-language integration test coverage.
 
-### Milestone E — Cross-Boundary (Phase 14)
+### Milestone E — Cross-Boundary ← **next** (Phase 14)
 
 Export-type index, cross-file binding propagation.
+
+### Milestone P — Polymorphism & Overloading (Phase P)
+
+Parameter type metadata, overload disambiguation, constructor-visible virtual dispatch, covariant return types.
+
+### Milestone S — Swift Parity (Phase S)
+
+For-loop binding, assignment chains, `guard let` narrowing. Blocked on tree-sitter-swift Node 22.
 
 ---
 
@@ -294,8 +246,6 @@ That supports: better call graphs, more accurate impact analysis, stronger AI co
 
 ## Summary
 
-**Complete:** Phases 7, 8, 9, 9C — explicit types, constructor inference, loop inference, field/property resolution, deep chains, mixed chains, stdlib passthroughs, comment-based types, unified fixpoint with 4 binding kinds, arbitrary-depth chain propagation across 11 languages.
+**Complete:** Phases 7, 8, 9, 9C, Milestone D (A, B, C) — explicit types, constructor inference, loop inference, field/property resolution, deep chains, mixed chains, stdlib passthroughs, comment-based types, unified fixpoint with 4 binding kinds, arbitrary-depth chain propagation, MRO-aware inheritance walking, this/self resolution, object/struct destructuring, null-check narrowing — across 11 languages with full integration test coverage.
 
-**Next:** Phase 10 (loop-fixpoint bridge) → Phase 11 (MRO + this/self + Go + Swift) → Phase 12 (destructuring) → Phase 13 (branch narrowing) → Phase 14 (cross-file propagation).
-
-Each phase is independently deliverable (except Phase 14 which depends on 10–13 being stable). Swift parity is threaded incrementally through Phases 10–13.
+**Next:** Phase 14 (cross-file binding propagation) — the architectural capstone. Phase S (Swift parity) is independent and unblocked once tree-sitter-swift Node 22 is resolved.

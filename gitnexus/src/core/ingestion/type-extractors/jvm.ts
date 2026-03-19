@@ -295,7 +295,8 @@ const extractKotlinDeclaration: TypeBindingExtractor = (node: SyntaxNode, env: M
     const varDecl = findChildByType(node, 'variable_declaration');
     if (varDecl) {
       const nameNode = findChildByType(varDecl, 'simple_identifier');
-      const typeNode = findChildByType(varDecl, 'user_type');
+      const typeNode = findChildByType(varDecl, 'user_type')
+        ?? findChildByType(varDecl, 'nullable_type');
       if (!nameNode || !typeNode) return;
       const varName = extractVarName(nameNode);
       const typeName = extractSimpleTypeName(typeNode);
@@ -341,7 +342,8 @@ const extractKotlinParameter: ParameterExtractor = (node: SyntaxNode, env: Map<s
 
   // Fallback: Kotlin `parameter` nodes use positional children, not named fields
   if (!nameNode) nameNode = findChildByType(node, 'simple_identifier');
-  if (!typeNode) typeNode = findChildByType(node, 'user_type');
+  if (!typeNode) typeNode = findChildByType(node, 'user_type')
+    ?? findChildByType(node, 'nullable_type');
 
   if (!nameNode || !typeNode) return;
   const varName = extractVarName(nameNode);
@@ -660,27 +662,76 @@ const findAncestorByType = (node: SyntaxNode, type: string): SyntaxNode | undefi
   return undefined;
 };
 
-const extractKotlinPatternBinding: PatternBindingExtractor = (node) => {
-  if (node.type !== 'type_test') return undefined;
-  const typeNode = node.lastNamedChild;
-  if (!typeNode) return undefined;
-  const typeName = extractSimpleTypeName(typeNode);
-  if (!typeName) return undefined;
-  const whenExpr = findAncestorByType(node, 'when_expression');
-  if (!whenExpr) return undefined;
-  const whenSubject = whenExpr.namedChild(0);
-  const subject = whenSubject?.firstNamedChild ?? whenSubject;
-  if (!subject) return undefined;
-  const varName = extractVarName(subject);
-  if (!varName) return undefined;
-  return { varName, typeName };
+const extractKotlinPatternBinding: PatternBindingExtractor = (node, scopeEnv, declarationTypeNodes, scope) => {
+  // Kotlin when/is smart casts (existing behavior)
+  if (node.type === 'type_test') {
+    const typeNode = node.lastNamedChild;
+    if (!typeNode) return undefined;
+    const typeName = extractSimpleTypeName(typeNode);
+    if (!typeName) return undefined;
+    const whenExpr = findAncestorByType(node, 'when_expression');
+    if (!whenExpr) return undefined;
+    const whenSubject = whenExpr.namedChild(0);
+    const subject = whenSubject?.firstNamedChild ?? whenSubject;
+    if (!subject) return undefined;
+    const varName = extractVarName(subject);
+    if (!varName) return undefined;
+    return { varName, typeName };
+  }
+
+  // Null-check narrowing: if (x != null) { ... }
+  // Kotlin AST: equality_expression > simple_identifier, "!=" [anon], "null" [anon]
+  // Note: `null` is an anonymous node in tree-sitter-kotlin, not `null_literal`.
+  if (node.type === 'equality_expression') {
+    const op = node.children.find(c => !c.isNamed && c.text === '!=');
+    if (!op) return undefined;
+
+    // `null` is anonymous in Kotlin grammar — use positional child scan
+    let varNode: SyntaxNode | undefined;
+    let hasNull = false;
+    for (let i = 0; i < node.childCount; i++) {
+      const c = node.child(i);
+      if (!c) continue;
+      if (c.type === 'simple_identifier') varNode = c;
+      if (!c.isNamed && c.text === 'null') hasNull = true;
+    }
+    if (!varNode || !hasNull) return undefined;
+
+    const varName = varNode.text;
+    const resolvedType = scopeEnv.get(varName);
+    if (!resolvedType) return undefined;
+
+    // Check if the original declaration type was nullable (ends with ?)
+    const declTypeNode = declarationTypeNodes.get(`${scope}\0${varName}`);
+    if (!declTypeNode) return undefined;
+    const declText = declTypeNode.text;
+    if (!declText.includes('?') && !declText.includes('null')) return undefined;
+
+    // Find the if-body: walk up to if_expression, then find control_structure_body
+    const ifExpr = findAncestorByType(node, 'if_expression');
+    if (!ifExpr) return undefined;
+    // The consequence is the first control_structure_body child
+    for (let i = 0; i < ifExpr.childCount; i++) {
+      const child = ifExpr.child(i);
+      if (child?.type === 'control_structure_body') {
+        return {
+          varName,
+          typeName: resolvedType,
+          narrowingRange: { startIndex: child.startIndex, endIndex: child.endIndex },
+        };
+      }
+    }
+    return undefined;
+  }
+
+  return undefined;
 };
 
 export const kotlinTypeConfig: LanguageTypeConfig = {
   allowPatternBindingOverwrite: true,
   declarationNodeTypes: KOTLIN_DECLARATION_NODE_TYPES,
   forLoopNodeTypes: KOTLIN_FOR_LOOP_NODE_TYPES,
-  patternBindingNodeTypes: new Set(['type_test']),
+  patternBindingNodeTypes: new Set(['type_test', 'equality_expression']),
   extractDeclaration: extractKotlinDeclaration,
   extractParameter: extractKotlinParameter,
   extractInitializer: extractKotlinInitializer,
