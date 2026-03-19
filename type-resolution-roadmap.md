@@ -83,7 +83,7 @@ Resolved: Strategy C in the PHP `extractForLoopBinding` walks up the AST to the 
 
 The system can already infer receiver types from uniquely resolved call results in `call-processor.ts`. That needs to be generalised so `TypeEnv` can benefit from it too.
 
-Resolved: `ReturnTypeLookup` (Phase 7.1) encapsulates `lookupReturnType` / `lookupRawReturnType` and is threaded through `ForLoopExtractorContext` (Phase 7.2) to all for-loop extractors. Phase 7.2 also added the `pendingCallResults` infrastructure (the `PendingAssignment` discriminated union in `types.ts` and the Tier 2b processing loop in `type-env.ts`), but no extractor populates it yet — `var x = f()` propagation is Phase 9 work.
+Resolved: `ReturnTypeLookup` (Phase 7.1) encapsulates `lookupReturnType` / `lookupRawReturnType` and is threaded through `ForLoopExtractorContext` (Phase 7.2) to all for-loop extractors. Phase 7.2 also added the `pendingCallResults` infrastructure (the `PendingAssignment` discriminated union in `types.ts` and the Tier 2b processing loop in `type-env.ts`). Phase 9 activated this infrastructure by extending all 11 language extractors to emit `{ kind: 'callResult' }` for simple function calls.
 
 ### Engineering direction (as implemented)
 
@@ -97,7 +97,7 @@ Resolved: `ReturnTypeLookup` (Phase 7.1) encapsulates `lookupReturnType` / `look
 
 - loop inference now works for direct function call iterables in all 7 typed-iteration languages
 - PHP `$this->property` foreach is resolved from class-level `@var` without requiring `@param` workarounds
-- `pendingCallResults` infrastructure is in place (Tier 2b loop + `PendingAssignment` union) — dormant until an extractor emits `{ kind: 'callResult' }` (Phase 9)
+- `pendingCallResults` infrastructure is active (Tier 2b loop + `PendingAssignment` union) — Phase 9 activated it across 11 languages
 
 ### Risk level
 
@@ -226,7 +226,13 @@ This phase pushed the system from variable typing into structural object modelli
 
 ---
 
-## Phase 9: Full Return-Type-Aware Variable Binding
+## Phase 9: Full Return-Type-Aware Variable Binding ✅ DELIVERED
+
+### Status: **Complete** (2026-03-19)
+
+**What was delivered**: Activated the dormant Tier 2b `pendingCallResults` infrastructure across 11 languages (TS, JS, Java, Kotlin, C#, Go, Rust, Python, PHP, Ruby, C++). Swift excluded. Tier 2b now runs before Tier 2a copy-propagation, enabling mixed chains like `const user = getUser(); const alias = user; alias.save()`.
+
+**Scope**: Phase 9A (simple call-result variable binding) is fully implemented. Phases 9B (loop inference from assigned call results) and 9C (broader method-chain inference) remain as future work.
 
 ### Goal
 
@@ -234,7 +240,7 @@ Make return-type-driven inference a first-class input to `TypeEnv`, not just a d
 
 ### Problems this phase addresses
 
-#### 9A. Binding variables from call results
+#### 9A. Binding variables from call results ✅
 
 ```typescript
 const users = repo.getUsers()
@@ -458,6 +464,6 @@ Phases 7 and 8 (including 8A and 8B) are **complete**. The type system now handl
 - ✅ type-preserving stdlib passthroughs (`unwrap`, `clone`, `expect`, etc.)
 - ✅ comment-based types (JSDoc, PHPDoc, YARD)
 
-**The next step is Phase 9**: promote return-type-aware inference into `TypeEnv` as a first-class input, enabling `var x = f()` variable binding and broader chain propagation. The `pendingCallResults` infrastructure is already in place (Tier 2b loop + `PendingAssignment` union) — it just needs extractors to emit `{ kind: 'callResult' }` entries.
+**Phase 9 is complete**: return-type-aware inference is now a first-class input to `TypeEnv` via the activated Tier 2b `pendingCallResults` loop. All 11 supported languages (TS, JS, Java, Kotlin, C#, Go, Rust, Python, PHP, Ruby, C++) emit `{ kind: 'callResult' }` entries from `extractPendingAssignment` for simple function calls. Tier 2b runs before Tier 2a copy-propagation, enabling mixed call-result + copy chains. **Next steps**: Phase 9B (loop inference from assigned call results) and 9C (broader method-chain inference).
 
 That path preserves the current strengths of the system while moving GitNexus the final step toward a robust, production-grade static-analysis foundation.
