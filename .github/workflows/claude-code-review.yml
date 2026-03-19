@@ -2,9 +2,10 @@ name: Claude Code Review
 
 # Uses pull_request_target so the workflow runs as defined on the default branch,
 # which allows access to secrets for posting review comments on fork PRs.
-# SECURITY: The checkout uses the fork's repo/branch directly so the action
-# can find the ref. The claude-code-action sandboxes execution — it does NOT
-# run arbitrary code from the checked-out source.
+# SECURITY: The checkout pins the fork's HEAD SHA (not the branch name) to
+# prevent TOCTOU races (force-push between trigger and checkout). The
+# claude-code-action sandboxes execution — it does NOT run arbitrary code
+# from the checked-out source.
 
 on:
   # Trigger only when explicitly requested:
@@ -78,7 +79,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ steps.pr.outputs.repo }}
-          ref: ${{ steps.pr.outputs.branch }}
+          ref: ${{ steps.pr.outputs.sha }}
           fetch-depth: 1
 
       - name: Run Claude Code Review
