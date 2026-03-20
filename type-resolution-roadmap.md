@@ -102,13 +102,14 @@ The goal is not to build a compiler. The goal is to support high-value static an
 
 Four incremental phases:
 1. **Parameter type metadata** — extend `SymbolDefinition` with `parameterTypes: string[]` extracted during parsing — **DELIVERED**
-2. **Overload disambiguation** — filter overloaded methods by argument literal types at call sites — **DELIVERED**
-3. **Constructor-visible virtual dispatch** — `Base b = new Derived(); b.method()` resolves to `Derived#method` when constructor type is a known subclass — **DELIVERED**
-4. **Covariant return type awareness** — prefer child's return type over inherited definition
+2. **Overload disambiguation** — filter overloaded methods by argument literal types at call sites — **DELIVERED** (Java, Kotlin, C#, C++, TypeScript)
+3. **Constructor-visible virtual dispatch** — `Base b = new Derived(); b.method()` resolves to `Derived#method` when constructor type is a known subclass — **DELIVERED** (Java, C#, TS, C++, Kotlin via `detectConstructorType` hook, C++ smart pointers via `make_shared`/`make_unique`)
+4. **Optional parameter arity resolution** — calls with omitted optional/default args now resolve via `requiredParameterCount` range check — **DELIVERED** (TS, Python, Kotlin, C#, C++, PHP, Ruby)
+5. **Covariant return type awareness** — prefer child's return type over inherited definition
 
 Languages benefiting: Java, Kotlin, C#, C++, TypeScript (overloading). All OOP languages (virtual dispatch).
 
-**Impact: High | Effort: High** (P.1–P.3 delivered; P.4 remains open)
+**Impact: High | Effort: High** (P.1–P.4 delivered; P.5 covariant return types remains open)
 
 ---
 
@@ -165,7 +166,7 @@ Phase P (polymorphism) ───────────┤
                                    │
 Phase S (Swift parity) ───────────┘
 
-Phase P.1–P.3 are delivered. P.4 (covariant return types) remains open.
+Phase P.1–P.4 are delivered. P.5 (covariant return types) remains open.
 Phase P and Phase S are independent of each other and Phase 14.
 Phase 14 benefits from Phase P (better per-file resolution = fewer cross-file gaps).
 ```
@@ -180,7 +181,7 @@ Phase 14 benefits from Phase P (better per-file resolution = fewer cross-file ga
 - `guard let` narrowing → Phase S
 
 ### Kotlin
-- Virtual dispatch: `Dog()` uses `call_expression` (no `new` keyword), not detected by `CONSTRUCTOR_EXPR_TYPES`
+- ~~Virtual dispatch: `Dog()` uses `call_expression` (no `new` keyword)~~ — **RESOLVED** via `detectConstructorType` hook
 
 ### All languages
 - Cross-file binding propagation → Phase 14
@@ -211,7 +212,7 @@ Export-type index, cross-file binding propagation.
 
 ### Milestone P — Polymorphism & Overloading (Phase P)
 
-Parameter type metadata, overload disambiguation, constructor-visible virtual dispatch, covariant return types.
+Parameter type metadata, overload disambiguation, constructor-visible virtual dispatch (including Kotlin `detectConstructorType` and C++ smart pointer factories), optional parameter arity resolution, covariant return types (open).
 
 ### Milestone S — Swift Parity (Phase S)
 

@@ -385,6 +385,10 @@ So return-type-aware receiver inference already exists in a constrained downstre
 | Field access binding | Yes | No† | Yes | Yes | Yes | Yes | Yes | No‖ | Yes | N/A | No | Yes | No |
 | Method-call-result binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | No | Yes | No |
 | Write access (ACCESSES write) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes§ | Yes | Yes | Yes | No |
+| Parameter types extracted | Yes** | No | Yes | Yes | Yes | Yes | Yes | Partial†† | No | No | No | Yes | No |
+| Method overload disambiguation | Yes** | No | Yes | Yes | Yes | No | No | No | No | No | No | Yes | No |
+| Constructor-visible virtual dispatch | Yes | No | Yes | Yes‡‡ | Yes | No | No | No | No | No | No | Yes§§ | No |
+| Optional parameter arity resolution | Yes | No | Yes | Yes | Yes | No | No | Yes | Yes | Yes | No | Yes | No |
 
 \* Python class-level annotated attributes (`address: Address`) now resolve `declaredType` correctly. The `self.x` instance attribute pattern is not yet supported.
 
@@ -399,6 +403,14 @@ So return-type-aware receiver inference already exists in a constrained downstre
 **Note on `this`/`self`/`$this` receivers:** Field access and method-call-result binding with `this`/`self`/`$this` as the receiver do not resolve in the fixpoint loop because these keywords are not stored in `scopeEnv`. They are resolved on-demand at call sites via `findEnclosingClassName()` AST walk. This is consistent across all languages and not a regression.
 
 § PHP write access covers instance property writes (`$obj->field = value`) and static property writes (`ClassName::$field = value`). Nullsafe writes (`$obj?->field = value`) are not tracked because this is invalid PHP syntax — null-safe member access on the left-hand side of assignment is a parse error.
+
+\*\* TS: `parameterTypes` populated with `inferLiteralType` for overload disambiguation. TS overloads share one implementation body (generateId collision), but disambiguation selects the correct candidate.
+
+†† Python: parameter types extracted only with PEP 3107 type annotations (`def f(x: int)`).
+
+‡‡ Kotlin virtual dispatch supported via `detectConstructorType` hook — detects `Dog()` constructor calls (no `new` keyword) by verifying callee against `ClassNameLookup`.
+
+§§ C++ smart pointer virtual dispatch supported for `make_shared<T>()`/`make_unique<T>()` factory patterns. Raw pointer `new` also supported.
 
 ---
 
@@ -417,6 +429,9 @@ The current system provides strong value for call resolution because it combines
 - ACCESSES edge emission for field read access (via chain walking) and field write access (via assignment capture) across 12 languages
 - mixed field+method chain resolution (e.g. `svc.getUser().address.save()`)
 - type-preserving stdlib passthrough for `unwrap()`, `clone()`, `expect()`, etc.
+- method overload disambiguation via argument literal types (Java, Kotlin, C#, C++)
+- constructor-visible virtual dispatch for same-file subclasses (Java, C#, TypeScript, C++, Kotlin)
+- optional/default parameter arity resolution — calls with omitted optional args still resolve (TS, Python, Kotlin, C#, C++, PHP, Ruby)
 
 This is enough to materially improve call-edge precision even without implementing a full static type system.
 
@@ -433,6 +448,7 @@ Important gaps still remain:
 - no complete destructuring-based field typing
 - no MRO/inheritance walking for field lookups (`lookupFieldByOwner` is direct-only)
 - for-loop variables bound at walk time cannot see fixpoint-resolved types (Phase 9B gap)
+- overloaded same-file methods share a graph node ID (generateId collision) — CALLS edges deduplicate to one per callee name
 
 ---
 
