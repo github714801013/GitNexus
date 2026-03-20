@@ -388,7 +388,7 @@ So return-type-aware receiver inference already exists in a constrained downstre
 | Parameter types extracted | Yes** | No | Yes | Yes | Yes | Yes | Yes | Partial†† | No | No | No | Yes | No |
 | Method overload disambiguation | Yes** | No | Yes | Yes | Yes | No | No | No | No | No | No | Yes | No |
 | Constructor-visible virtual dispatch | Yes | No | Yes | Yes‡‡ | Yes | No | No | No | No | No | No | Yes§§ | No |
-| Optional parameter arity resolution | Yes | No | Yes | Yes | Yes | No | No | Yes | Yes | Yes | No | Yes | No |
+| Optional parameter arity resolution | Yes | No | No | Yes | Yes | No | No | Yes | Yes | Yes | No | Yes | No |
 
 \* Python class-level annotated attributes (`address: Address`) now resolve `declaredType` correctly. The `self.x` instance attribute pattern is not yet supported.
 
