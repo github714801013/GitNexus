@@ -34,6 +34,7 @@ from sweep import (
     API_PAGE_SIZE,
     MIN_SAMPLES_FOR_OUTLIER_DETECTION,
     PCA_MAX_COMPONENTS,
+    MAX_EMBED_CHARS,
 )
 
 
@@ -122,6 +123,25 @@ class TestFetchAllOpenItems:
         ]
         items = fetch_all_open_items()
         assert items[0]["text"] == "My Title\n\nMy Body"
+
+    @patch("sweep.github_api_get")
+    def test_long_body_truncated(self, mock_get):
+        """Bodies exceeding MAX_EMBED_CHARS are truncated to fit the token window."""
+        long_body = "x" * (MAX_EMBED_CHARS + 500)
+        mock_get.return_value = [
+            _make_api_issue(1, "Title", body=long_body),
+        ]
+        items = fetch_all_open_items()
+        assert len(items[0]["text"]) == MAX_EMBED_CHARS
+
+    @patch("sweep.github_api_get")
+    def test_short_body_not_truncated(self, mock_get):
+        """Bodies under the limit are left intact."""
+        mock_get.return_value = [
+            _make_api_issue(1, "Title", body="Short body"),
+        ]
+        items = fetch_all_open_items()
+        assert items[0]["text"] == "Title\n\nShort body"
 
     @patch("sweep.github_api_get")
     def test_null_body_handled(self, mock_get):
