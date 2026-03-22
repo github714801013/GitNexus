@@ -51,6 +51,11 @@ DRY_RUN: bool = os.environ.get("INPUT_DRY_RUN", "false").lower() == "true"
 PCA_MAX_COMPONENTS: int = 33
 MIN_SAMPLES_FOR_OUTLIER_DETECTION: int = 100
 
+# Max character length for embedding input text. bge-small-en-v1.5 has a
+# 512-token context window (~4 chars/token). We keep title + body under
+# this limit so the model sees the full text instead of silently truncating.
+MAX_EMBED_CHARS: int = 2000
+
 # GitHub REST API page size (max allowed is 100).
 API_PAGE_SIZE: int = 100
 
@@ -121,6 +126,11 @@ def fetch_all_open_items() -> list[TriageItem]:
                 break
 
             body = raw.get("body", "") or ""
+            full_text = f"{raw['title']}\n\n{body}"
+            # Truncate to fit the embedding model's token window.
+            # Title is always preserved; body gets clipped if needed.
+            if len(full_text) > MAX_EMBED_CHARS:
+                full_text = full_text[:MAX_EMBED_CHARS]
             items.append(TriageItem(
                 number=raw["number"],
                 title=raw["title"],
@@ -128,7 +138,7 @@ def fetch_all_open_items() -> list[TriageItem]:
                 is_pr="pull_request" in raw,
                 labels=[lbl["name"] for lbl in raw.get("labels", [])],
                 created_at=raw["created_at"],
-                text=f"{raw['title']}\n\n{body}",
+                text=full_text,
             ))
 
         if len(data) < API_PAGE_SIZE:
