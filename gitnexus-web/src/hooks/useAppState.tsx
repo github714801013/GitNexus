@@ -145,7 +145,9 @@ interface AppState {
   llmSettings: LLMSettings;
   updateLLMSettings: (updates: Partial<LLMSettings>) => void;
   isSettingsPanelOpen: boolean;
+  isHelpDialogBoxOpen: boolean;
   setSettingsPanelOpen: (open: boolean) => void;
+  setHelpDialogBoxOpen: (open: boolean) => void;
   isAgentReady: boolean;
   isAgentInitializing: boolean;
   agentError: string | null;
@@ -292,6 +294,7 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
   // LLM/Agent state
   const [llmSettings, setLLMSettings] = useState<LLMSettings>(loadSettings);
   const [isSettingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [isHelpDialogBoxOpen, setHelpDialogBoxOpen] = useState(false);
   const [isAgentReady, setIsAgentReady] = useState(false);
   const [isAgentInitializing, setIsAgentInitializing] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
@@ -1190,6 +1193,8 @@ export const AppStateProvider = ({ children }: { children: ReactNode }) => {
     updateLLMSettings,
     isSettingsPanelOpen,
     setSettingsPanelOpen,
+    isHelpDialogBoxOpen,
+    setHelpDialogBoxOpen,
     isAgentReady,
     isAgentInitializing,
     agentError,
