@@ -18,7 +18,7 @@ const validRelType = (t: string): boolean =>
   (REL_TYPES as readonly string[]).includes(t);
 
 const isSafeId = (id: string): boolean =>
-  /^[a-zA-Z0-9_:.\-]+$/.test(id);
+  /^[a-zA-Z0-9_:.\-/]+$/.test(id);
 
 const isWriteQuery = (cypher: string): boolean =>
   /\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|DETACH)\b/.test(cypher.toUpperCase());
@@ -102,6 +102,8 @@ describe('isSafeId – identifier allowlist regex', () => {
     ['dotted name', 'Module:path.to.thing'],
     ['with hyphen', 'File:my-file.ts'],
     ['community id', 'comm_5'],
+    ['file path id', 'File:src/index.ts'],
+    ['nested path id', 'Function:src/utils/helpers.ts:doStuff'],
   ])('accepts valid ID: %s', (_desc, id) => {
     expect(isSafeId(id)).toBe(true);
   });
@@ -109,8 +111,7 @@ describe('isSafeId – identifier allowlist regex', () => {
   it.each([
     ['with spaces', 'Process:my process'],
     ['with @ symbol', 'Module:@scope/pkg'],
-    ['with forward slash', 'File:src/index.ts'],
-  ])('rejects ID with overly permissive chars: %s', (_desc, id) => {
+  ])('rejects ID with unsafe chars: %s', (_desc, id) => {
     expect(isSafeId(id)).toBe(false);
   });
 
