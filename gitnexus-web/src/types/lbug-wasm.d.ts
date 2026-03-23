@@ -12,9 +12,8 @@ declare module '@ladybugdb/wasm-core' {
     close(): Promise<void>;
   }
   export interface QueryResult {
-    getAll?(): Promise<any[]>;
-    getAllRows?(): Promise<any[]>;
-    getAllObjects?(): Promise<any[]>;
+    getAll(): Promise<any[]>;
+    getAllRows(): Promise<any[]>;
     hasNext(): Promise<boolean>;
     getNext(): Promise<any>;
   }
