@@ -19,6 +19,8 @@
     <img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"/>
   </a>
 
+  <p><strong>Enterprise (SaaS & Self-hosted)</strong> - <a href="https://akonlabs.com">akonlabs.com</a></p>
+
 </div>
 
 **Building nervous system for agent context.**
@@ -56,6 +58,28 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 | **Privacy** | Everything local, no network                                   | Everything in-browser, no server                             |
 
 > **Bridge mode:** `gitnexus serve` connects the two — the web UI auto-detects the local server and can browse all your CLI-indexed repos without re-uploading or re-indexing.
+
+---
+
+## Enterprise
+
+GitNexus is available as an **enterprise offering** - either as a fully managed **SaaS** or a **self-hosted** deployment. Also available for **commercial use** of the OSS version with proper licensing.
+
+Enterprise includes:
+- **PR Review** - automated blast radius analysis on pull requests
+- **Auto-updating Code Wiki** - always up-to-date documentation (Code Wiki is also available in OSS)
+- **Auto-reindexing** - knowledge graph stays fresh automatically
+- **Multi-repo support** - unified graph across repositories
+- **OCaml support** - additional language coverage
+- **Priority feature/language support** - request new languages or features
+
+**Upcoming:**
+- Auto regression forensics
+- End-to-end test generation
+
+👉 Learn more at [akonlabs.com](https://akonlabs.com)
+
+💬 For commercial licensing or enterprise inquiries, ping us on [Discord](https://discord.gg/AAsRVT6fGb) or drop an email at founders@akonlabs.com
 
 ---
 
