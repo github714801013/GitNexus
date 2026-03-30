@@ -80,6 +80,10 @@ export type NodeProperties = {
   isReadonly?: boolean;
   isAbstract?: boolean;
   isFinal?: boolean;
+  isVirtual?: boolean;
+  isOverride?: boolean;
+  isAsync?: boolean;
+  isPartial?: boolean;
   annotations?: string[];
   // Route/response
   responseKeys?: string[];
