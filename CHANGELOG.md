@@ -10,7 +10,7 @@ All notable changes to GitNexus will be documented in this file.
 - Added automatic cleanup of stale KuzuDB index files
 - LadybugDB v0.15 requires explicit VECTOR extension loading for semantic search
 
-## [1.6.0] - 2026-04-01
+## [1.5.3] - 2026-04-01
 
 ### Added
 
