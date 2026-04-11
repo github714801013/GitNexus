@@ -1,45 +1,71 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
-const BOTTOM_THRESHOLD = 100;
+const DEFAULT_BOTTOM_THRESHOLD = 100;
+const USER_SCROLL_EPSILON = 5;
 
 export interface UseAutoScrollResult {
   scrollContainerRef: React.RefObject<HTMLDivElement>;
-  messagesEndRef: React.RefObject<HTMLDivElement>;
+  messagesContainerRef: React.RefObject<HTMLDivElement>;
   isAtBottom: boolean;
-  scrollToBottom: () => void;
+  scrollToBottom: (behavior?: ScrollBehavior) => void;
 }
 
-function isNearBottom(element: HTMLDivElement): boolean {
-  return element.scrollHeight - element.scrollTop - element.clientHeight <= BOTTOM_THRESHOLD;
+function isNearBottom(element: HTMLElement, threshold: number): boolean {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= threshold;
 }
 
-export function useAutoScroll(
-  chatMessages: unknown[],
+export function useAutoScroll<T>(
+  chatMessages: T[],
   isChatLoading: boolean,
+  bottomThreshold = DEFAULT_BOTTOM_THRESHOLD,
 ): UseAutoScrollResult {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   const [isAtBottom, setIsAtBottom] = useState(true);
+
   const shouldStickToBottomRef = useRef(true);
   const lastScrollTopRef = useRef(0);
-  const frameIdRef = useRef<number | null>(null);
+  const scrollFrameIdRef = useRef<number | null>(null);
 
   const syncScrollState = useCallback(() => {
     const element = scrollContainerRef.current;
     if (!element) return;
 
-    const nearBottom = isNearBottom(element);
+    const currentScrollTop = element.scrollTop;
+    const nearBottom = isNearBottom(element, bottomThreshold);
 
     if (nearBottom) {
       shouldStickToBottomRef.current = true;
-    } else if (element.scrollTop < lastScrollTopRef.current) {
+    } else if (currentScrollTop < lastScrollTopRef.current - USER_SCROLL_EPSILON) {
       shouldStickToBottomRef.current = false;
     }
 
-    lastScrollTopRef.current = element.scrollTop;
+    lastScrollTopRef.current = currentScrollTop;
     setIsAtBottom(nearBottom);
-  }, []);
+  }, [bottomThreshold]);
+
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = 'smooth') => {
+      const element = scrollContainerRef.current;
+      if (!element) return;
+
+      shouldStickToBottomRef.current = true;
+
+      if (behavior === 'auto') {
+        element.scrollTop = element.scrollHeight;
+        lastScrollTopRef.current = element.scrollTop;
+        setIsAtBottom(isNearBottom(element, bottomThreshold));
+        return;
+      }
+
+      element.scrollTo({
+        top: element.scrollHeight,
+        behavior,
+      });
+    },
+    [bottomThreshold],
+  );
 
   useEffect(() => {
     const element = scrollContainerRef.current;
@@ -48,12 +74,12 @@ export function useAutoScroll(
     lastScrollTopRef.current = element.scrollTop;
 
     const handleScroll = () => {
-      if (frameIdRef.current !== null) {
-        cancelAnimationFrame(frameIdRef.current);
+      if (scrollFrameIdRef.current !== null) {
+        cancelAnimationFrame(scrollFrameIdRef.current);
       }
 
-      frameIdRef.current = requestAnimationFrame(() => {
-        frameIdRef.current = null;
+      scrollFrameIdRef.current = requestAnimationFrame(() => {
+        scrollFrameIdRef.current = null;
         syncScrollState();
       });
     };
@@ -63,32 +89,57 @@ export function useAutoScroll(
 
     return () => {
       element.removeEventListener('scroll', handleScroll);
-      if (frameIdRef.current !== null) {
-        cancelAnimationFrame(frameIdRef.current);
-        frameIdRef.current = null;
+
+      if (scrollFrameIdRef.current !== null) {
+        cancelAnimationFrame(scrollFrameIdRef.current);
+        scrollFrameIdRef.current = null;
       }
     };
   }, [syncScrollState]);
 
-  const jumpToBottom = useCallback(() => {
-    const element = scrollContainerRef.current;
-    if (!element) return;
+  useEffect(() => {
+    const content = messagesContainerRef.current;
+    const scrollEl = scrollContainerRef.current;
+    if (!content || !scrollEl || typeof ResizeObserver === 'undefined') return;
 
-    element.scrollTop = element.scrollHeight;
-    lastScrollTopRef.current = element.scrollTop;
-  }, []);
+    let resizeFrameId: number | null = null;
+
+    const observer = new ResizeObserver(() => {
+      if (shouldStickToBottomRef.current) {
+        if (resizeFrameId !== null) {
+          cancelAnimationFrame(resizeFrameId);
+        }
+
+        resizeFrameId = requestAnimationFrame(() => {
+          resizeFrameId = null;
+          scrollToBottom('auto');
+        });
+      } else {
+        syncScrollState();
+      }
+    });
+
+    observer.observe(content);
+
+    return () => {
+      observer.disconnect();
+
+      if (resizeFrameId !== null) {
+        cancelAnimationFrame(resizeFrameId);
+        resizeFrameId = null;
+      }
+    };
+  }, [chatMessages.length, scrollToBottom, syncScrollState]);
 
   useLayoutEffect(() => {
     if (!shouldStickToBottomRef.current) return;
-    jumpToBottom();
-    setIsAtBottom(true);
-  }, [chatMessages, isChatLoading, jumpToBottom]);
+    scrollToBottom('auto');
+  }, [chatMessages.length, isChatLoading, scrollToBottom]);
 
-  const scrollToBottom = useCallback(() => {
-    shouldStickToBottomRef.current = true;
-    setIsAtBottom(true);
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, []);
-
-  return { scrollContainerRef, messagesEndRef, isAtBottom, scrollToBottom };
+  return {
+    scrollContainerRef,
+    messagesContainerRef,
+    isAtBottom,
+    scrollToBottom,
+  };
 }

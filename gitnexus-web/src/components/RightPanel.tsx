@@ -38,7 +38,7 @@ export const RightPanel = () => {
   const [activeTab, setActiveTab] = useState<'chat' | 'processes'>('chat');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Keep streamed replies pinned unless the user intentionally scrolls away from the bottom.
-  const { scrollContainerRef, messagesEndRef, isAtBottom, scrollToBottom } = useAutoScroll(
+  const { scrollContainerRef, messagesContainerRef, isAtBottom, scrollToBottom } = useAutoScroll(
     chatMessages,
     isChatLoading,
   );
@@ -314,7 +314,7 @@ export const RightPanel = () => {
                 </div>
               </div>
             ) : (
-              <div className="flex flex-col gap-6">
+              <div ref={messagesContainerRef} className="flex flex-col gap-6">
                 {chatMessages.map((message) => (
                   <div key={message.id} className="animate-fade-in">
                     {/* User message - compact label style */}
@@ -390,14 +390,12 @@ export const RightPanel = () => {
                 ))}
               </div>
             )}
-            {/* Scroll anchor */}
-            <div ref={messagesEndRef} />
           </div>
 
           {/* Scroll to bottom */}
           <button
             aria-label="Scroll to bottom"
-            onClick={scrollToBottom}
+            onClick={() => scrollToBottom()}
             className={`absolute bottom-20 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border-subtle bg-elevated px-3 py-1.5 text-xs text-text-secondary shadow-lg transition-all duration-200 hover:border-accent hover:text-accent ${
               !isAtBottom && chatMessages.length > 0
                 ? 'translate-y-0 opacity-100'
@@ -405,7 +403,7 @@ export const RightPanel = () => {
             }`}
           >
             <ArrowDown className="mr-1 inline h-3.5 w-3.5" />
-            New messages
+            Scroll to bottom
           </button>
 
           {/* Input */}
