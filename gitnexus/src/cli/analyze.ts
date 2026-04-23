@@ -343,6 +343,9 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     }
 
     console.error(`\n  Analysis failed: ${msg}\n`);
+    if (err instanceof Error && err.stack) {
+      console.error(err.stack);
+    }
 
     // Provide helpful guidance for known failure modes
     if (

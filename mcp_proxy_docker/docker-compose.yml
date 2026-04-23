@@ -4,12 +4,17 @@ services:
     build:
       context: ..
       dockerfile: mcp_proxy_docker/Dockerfile
+      args:
+        - VITE_BACKEND_URL=${VITE_BACKEND_URL:-http://localhost:4747}
     container_name: gitnexus-mcp-proxy
     ports:
       - "1347:1347"
       - "1348:1348"
+      - "1349:1349"
+      - "1350:1350"
     environment:
       - GITEA_SECRET=${GITEA_SECRET}
+      - GITEA_TOKEN=${GITEA_TOKEN}
       - PROJECTS_ROOT=${PROJECTS_ROOT}
       - HOME=/root
     volumes:
@@ -17,8 +22,6 @@ services:
       - ${PROJECTS_ROOT}:${PROJECTS_ROOT}
       # Map host .gitnexus config/indices to the same path for persistence
       - ${HOME}/.gitnexus:/root/.gitnexus
-      # Optional: Share host's npm global packages if needed, 
-      # but we linked inside the container, so it's fine.
     restart: unless-stopped
 
 networks:

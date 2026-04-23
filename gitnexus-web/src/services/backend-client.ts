@@ -188,9 +188,11 @@ export function streamSSE<T = unknown>(url: string, handlers: SSEHandlers<T>): A
   return controller;
 }
 
+import { DEFAULT_BACKEND_URL } from '../config/ui-constants';
+
 // ── Configuration ──────────────────────────────────────────────────────────
 
-let _backendUrl = 'http://localhost:4747';
+let _backendUrl = DEFAULT_BACKEND_URL;
 
 export const setBackendUrl = (url: string): void => {
   _backendUrl = url.replace(/\/$/, '');

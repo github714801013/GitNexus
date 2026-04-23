@@ -53,6 +53,10 @@ async def gitea_webhook(
         repo_name = repo_data.get("full_name")  # e.g., "user/repo"
         clone_url = repo_data.get("clone_url")  # SSH or HTTP URL
         
+        # Extract branch from ref (e.g., refs/heads/main -> main)
+        ref = payload.get("ref", "")
+        branch = ref.replace("refs/heads/", "") if ref.startswith("refs/heads/") else None
+        
         if not repo_name:
             logger.error("Repository full_name not found in payload")
             raise HTTPException(status_code=400, detail="Repository full_name missing")
@@ -60,9 +64,9 @@ async def gitea_webhook(
         # Determine local path (mapping repo_name directly to subfolders in projects_root)
         repo_path = os.path.join(projects_root, repo_name)
         
-        logger.info(f"Queueing indexing for {repo_name} (URL: {clone_url}) at {repo_path}")
-        # Pass clone_url to background task to allow cloning if path doesn't exist
-        background_tasks.add_task(run_analyze, repo_path, clone_url)
+        logger.info(f"Queueing indexing for {repo_name} (URL: {clone_url}, Branch: {branch}) at {repo_path}")
+        # Pass clone_url and branch to background task to allow cloning and switching branches
+        background_tasks.add_task(run_analyze, repo_path, clone_url, branch)
         
         return {"status": "accepted", "repository": repo_name, "path": repo_path}
     except HTTPException:

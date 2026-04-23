@@ -156,7 +156,9 @@ export const initEmbedder = async (
   initPromise = (async () => {
     try {
       // Configure transformers.js environment
-      env.allowLocalModels = false;
+      env.allowLocalModels = true; // MUST be true if allowRemoteModels is false to satisfy transformers.js validation
+      env.allowRemoteModels = false; // Prevent ETag checks that crash offline analysis if cached
+
       // Default cache to user-writable location. transformers.js defaults to
       // ./node_modules/.cache inside its own install dir, which is unwritable
       // when gitnexus is installed globally (e.g. /usr/lib/node_modules/).

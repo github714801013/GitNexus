@@ -387,7 +387,7 @@ export const SettingsPanel = ({
                   type="url"
                   value={backendUrl}
                   onChange={(e) => onBackendUrlChange(e.target.value)}
-                  placeholder="http://localhost:4747"
+                  placeholder="http://10.1.14.177:1349"
                   className="w-full rounded-xl border border-border-subtle bg-elevated px-4 py-3 font-mono text-sm text-text-primary transition-all outline-none placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
                 />
                 <p className="text-xs text-text-muted">

@@ -20,7 +20,7 @@ import {
   type ConnectResult,
   type BackendRepo,
 } from './services/backend-client';
-import { ERROR_RESET_DELAY_MS } from './config/ui-constants';
+import { ERROR_RESET_DELAY_MS, DEFAULT_BACKEND_URL } from './config/ui-constants';
 
 const AppContent = () => {
   const {
@@ -249,7 +249,7 @@ const AppContent = () => {
           // Refresh the repo list, connect to the new repo, and switch to it.
           // Retry once after 1s if the repo isn't found yet (server may still
           // be reinitializing after the worker completed).
-          const url = serverBaseUrl ?? 'http://localhost:4747';
+          const url = serverBaseUrl ?? DEFAULT_BACKEND_URL;
           for (let attempt = 0; attempt < 2; attempt++) {
             try {
               const repos = await fetchRepos();

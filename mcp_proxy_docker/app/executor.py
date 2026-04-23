@@ -3,10 +3,23 @@ import os
 import portalocker
 import logging
 from typing import Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger("mcp_proxy.executor")
 
-def run_analyze(repo_path: str, git_url: Optional[str] = None):
+def get_authenticated_url(url: str) -> str:
+    """
+    Injects GITEA_TOKEN into the Git URL if available.
+    """
+    token = os.getenv("GITEA_TOKEN")
+    if not token or not url.startswith("http"):
+        return url
+    
+    parsed = urlparse(url)
+    # Reconstruct URL with token: https://token@domain/path
+    return f"{parsed.scheme}://{token}@{parsed.netloc}{parsed.path}"
+
+def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[str] = None):
     """
     Ensures the repository exists (clone if not), pulls latest changes, 
     and runs 'npx gitnexus analyze'.
@@ -14,57 +27,134 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None):
     
     # 1. Handle cloning if repository doesn't exist
     if not os.path.isdir(repo_path):
-        if not git_url:
+        # Webhook mapping is projects_root/group/repo
+        # Let's check if it exists at projects_root/repo instead (flat structure fallback)
+        projects_root = os.getenv("PROJECTS_ROOT", "/projects")
+        repo_basename = os.path.basename(repo_path)
+        flat_path = os.path.join(projects_root, repo_basename)
+        
+        if os.path.isdir(flat_path):
+            logger.info(f"Found existing repository at flat path: {flat_path}")
+            repo_path = flat_path
+        elif not git_url:
             logger.error(f"Repository path {repo_path} does not exist and no git_url provided for cloning.")
             return False
-        
-        try:
-            logger.info(f"Cloning {git_url} into {repo_path}")
-            # Ensure parent directory exists
-            os.makedirs(os.path.dirname(repo_path), exist_ok=True)
-            result = subprocess.run(
-                ["git", "clone", git_url, repo_path],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if result.returncode != 0:
-                logger.error(f"Failed to clone {git_url}: {result.stderr}")
+        else:
+            try:
+                auth_url = get_authenticated_url(git_url)
+                logger.info(f"Cloning {git_url} (authenticated) into {repo_path}")
+                # Ensure parent directory exists
+                os.makedirs(os.path.dirname(repo_path), exist_ok=True)
+                
+                clone_cmd = ["git", "clone", "--depth", "1"]
+                if branch:
+                    clone_cmd.extend(["-b", branch])
+                clone_cmd.extend([auth_url, repo_path])
+
+                # Use --depth 1 for faster initial clone in webhook
+                result = subprocess.run(
+                    clone_cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if result.returncode != 0:
+                    # Don't log the full command to avoid leaking token in logs if git includes it in stderr
+                    logger.error(f"Failed to clone repository. Exit code: {result.returncode}")
+                    return False
+            except Exception as e:
+                logger.error(f"Error during cloning: {str(e)}")
                 return False
-        except Exception as e:
-            logger.error(f"Error during cloning of {git_url}: {str(e)}")
-            return False
 
     # 2. Proceed with Update and Analyze using a Lock
     lock_file = os.path.join(repo_path, ".gitnexus_analyze.lock")
     
     try:
         with portalocker.Lock(lock_file, timeout=60):
+            # Mark directory as safe for git (to avoid dubious ownership issues in Docker)
+            subprocess.run(["git", "config", "--global", "--add", "safe.directory", repo_path], check=False)
+
             # Ensure the latest code is pulled before indexing
             logger.info(f"Updating latest changes for {repo_path}")
-            subprocess.run(
-                ["git", "pull"],
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                check=False
-            )
+            
+            # Use authenticated URL for pull as well
+            if git_url:
+                auth_url = get_authenticated_url(git_url)
+                subprocess.run(
+                    ["git", "remote", "set-url", "origin", auth_url],
+                    cwd=repo_path,
+                    capture_output=True,
+                    check=False
+                )
+
+            if branch:
+                logger.info(f"Switching to branch {branch} and updating")
+                subprocess.run(
+                    ["git", "remote", "set-branches", "origin", branch],
+                    cwd=repo_path,
+                    capture_output=True,
+                    check=False
+                )
+                subprocess.run(
+                    ["git", "fetch", "--depth", "1", "origin", branch],
+                    cwd=repo_path,
+                    capture_output=True,
+                    check=False
+                )
+                subprocess.run(
+                    ["git", "checkout", "-f", branch],
+                    cwd=repo_path,
+                    capture_output=True,
+                    check=False
+                )
+                subprocess.run(
+                    ["git", "reset", "--hard", f"origin/{branch}"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    check=False
+                )
+            else:
+                subprocess.run(
+                    ["git", "pull"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
 
             logger.info(f"Starting gitnexus analyze for {repo_path}")
-            # Ensure npx gitnexus analyze is run in the repository directory
+            # Use absolute path to gitnexus binary inside container
+            gitnexus_bin = "/app/gitnexus/dist/gitnexus/src/cli/index.js"
+            
+            # EXPLICITLY pass proxy env vars to ensure fetch works in container runtime
+            env = os.environ.copy()
+            if os.getenv("https_proxy"):
+                env["HTTPS_PROXY"] = os.getenv("https_proxy")
+            if os.getenv("http_proxy"):
+                env["HTTP_PROXY"] = os.getenv("http_proxy")
+            
+            # Use HF mirror to bypass proxy timeout issues for transformers.js
+            env["HF_ENDPOINT"] = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
+            
+            # Add --force to ensure registry is updated even if repo is "Already up to date"
             result = subprocess.run(
-                ["npx", "gitnexus", "analyze"],
-                cwd=repo_path,
+                ["node", gitnexus_bin, "analyze", repo_path, "--embeddings", "--force"],
                 capture_output=True,
                 text=True,
-                check=False
+                check=False,
+                env=env
             )
+            
+            if result.stdout:
+                logger.info(f"Analyze output: {result.stdout}")
+            if result.stderr:
+                logger.info(f"Analyze error/warning output: {result.stderr}")
             
             if result.returncode == 0:
                 logger.info(f"Successfully indexed {repo_path}")
                 return True
             else:
-                logger.error(f"Failed to index {repo_path}: {result.stderr}")
+                logger.error(f"Failed to index {repo_path}. Exit code: {result.returncode}")
                 return False
                 
     except portalocker.exceptions.AlreadyLocked:

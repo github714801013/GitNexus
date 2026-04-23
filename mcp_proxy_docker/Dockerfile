@@ -23,30 +23,33 @@ RUN apt-get update -y && apt-get install -y --fix-missing \
     build-essential \
     libgomp1 \
     util-linux \
+    && git config --global user.email "gitnexus@example.com" \
+    && git config --global user.name "GitNexus Builder" \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --fix-missing nodejs \
     && ln -s /usr/bin/python3 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 核心并发控制
+# 2. 核心参数配置
 ENV PATH="/app/gitnexus/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
+ENV HF_HOME="/root/.cache/huggingface"
 
 WORKDIR /app
 
-# 安装 mcp-proxy
-RUN npm install -g mcp-proxy --registry=http://registry.npmmirror.com
+# 安装 mcp-proxy 和 serve (用于托管前端)
+RUN npm install -g mcp-proxy serve --registry=http://registry.npmmirror.com
 
 # 3. 复制项目文件
 COPY gitnexus ./gitnexus
 COPY gitnexus-shared ./gitnexus-shared
-COPY mcp_proxy_docker ./mcp_proxy_docker
+COPY gitnexus-web ./gitnexus-web
 
 # 4. 构建 gitnexus-shared
 WORKDIR /app/gitnexus-shared
 RUN npm install --registry=http://registry.npmmirror.com --no-audit --no-fund --ignore-scripts && \
     ./node_modules/.bin/tsc
 
-# 5. 构建 GitNexus
+# 5. 构建 GitNexus (Backend) 并预下载模型
 WORKDIR /app/gitnexus
 RUN npm install --registry=http://registry.npmmirror.com --no-audit --no-fund --ignore-scripts && \
     npm rebuild @ladybugdb/core && \
@@ -56,9 +59,18 @@ RUN npm install --registry=http://registry.npmmirror.com --no-audit --no-fund --
     cp package.json dist/gitnexus/ && \
     mkdir -p dist/gitnexus/vendor && \
     cp -r vendor/* dist/gitnexus/vendor/ && \
-    chmod +x dist/gitnexus/src/cli/index.js
+    chmod +x dist/gitnexus/src/cli/index.js && \
+    pip3 install --no-cache-dir -i http://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com --break-system-packages huggingface_hub "httpx[socks]" && \
+    HF_ENDPOINT=https://hf-mirror.com hf download Xenova/bge-small-zh-v1.5 || true
 
-# 6. Setup the Proxy Application (Python Side)
+# 6. 构建 GitNexus Web (Frontend)
+WORKDIR /app/gitnexus-web
+ARG VITE_BACKEND_URL
+ENV VITE_BACKEND_URL=${VITE_BACKEND_URL}
+RUN npm install --registry=http://registry.npmmirror.com --no-audit --no-fund --ignore-scripts --legacy-peer-deps && \
+    npx vite build
+
+# 7. Setup the Proxy Application (Python Side)
 WORKDIR /app/mcp_proxy
 COPY ./mcp_proxy_docker/requirements.txt .
 RUN pip3 install --no-cache-dir -i http://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com --break-system-packages -r requirements.txt
@@ -67,7 +79,7 @@ RUN pip3 install --no-cache-dir -i http://mirrors.aliyun.com/pypi/simple/ --trus
 COPY ./mcp_proxy_docker/app ./app
 
 # Expose ports
-EXPOSE 1347 1348
+EXPOSE 1347 1348 1349 1350
 
 # Entrypoint script
 COPY ./mcp_proxy_docker/entrypoint.sh /entrypoint.sh
