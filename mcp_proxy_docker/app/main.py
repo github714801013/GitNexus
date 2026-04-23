@@ -66,36 +66,39 @@ async def gitea_webhook(
         
         # Update the dynamic repos.json config file to keep track of Webhook-added repos and branches
         repos_file = os.path.join(projects_root, "repos.json")
-        repos_list = []
-        if os.path.exists(repos_file):
-            try:
-                with open(repos_file, "r", encoding="utf-8") as f:
-                    repos_list = json.load(f)
-            except Exception:
-                pass
         
-        found = False
-        for r in repos_list:
-            if r.get("full_name") == repo_name:
-                if clone_url:
-                    r["clone_url"] = clone_url
-                if branch:
-                    r["branch"] = branch
-                found = True
-                break
-        
-        if not found:
-            repos_list.append({
-                "full_name": repo_name,
-                "clone_url": clone_url,
-                "branch": branch or "master"
-            })
-            
         try:
-            with open(repos_file, "w", encoding="utf-8") as f:
+            # 使用文件锁防止并发写入冲突
+            with portalocker.Lock(repos_file, 'a+', timeout=10) as f:
+                f.seek(0)
+                try:
+                    content = f.read()
+                    repos_list = json.loads(content) if content else []
+                except Exception:
+                    repos_list = []
+                
+                found = False
+                for r in repos_list:
+                    if r.get("full_name") == repo_name:
+                        if clone_url:
+                            r["clone_url"] = clone_url
+                        if branch:
+                            r["branch"] = branch
+                        found = True
+                        break
+                
+                if not found:
+                    repos_list.append({
+                        "full_name": repo_name,
+                        "clone_url": clone_url,
+                        "branch": branch or "master"
+                    })
+                
+                f.seek(0)
+                f.truncate()
                 json.dump(repos_list, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            logger.error(f"Failed to update repos.json: {e}")
+            logger.error(f"Failed to update repos.json concurrently: {e}")
 
         logger.info(f"Queueing indexing for {repo_name} (URL: {clone_url}, Branch: {branch}) at {repo_path}")
         # Pass clone_url and branch to background task to allow cloning and switching branches

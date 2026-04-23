@@ -24,12 +24,12 @@ if os.path.exists(REMOTE_REPOS):
     except Exception as e:
         print(f"读取远程 repos.json 失败: {e}")
 
-# 加载本地部署包带过来的配置，如果存在相同项目，则覆盖远端（方便修改分支或 URL）
+# 加载本地部署包带过来的配置，如果存在相同项目，则跳过不覆盖，只追加新项目
 if os.path.exists(LOCAL_REPOS):
     try:
         with open(LOCAL_REPOS, "r", encoding="utf-8") as f:
             for r in json.load(f):
-                if r.get("full_name"):
+                if r.get("full_name") and r["full_name"] not in repos_dict:
                     repos_dict[r["full_name"]] = r
     except Exception as e:
         print(f"读取本地 repos.json 失败: {e}")
