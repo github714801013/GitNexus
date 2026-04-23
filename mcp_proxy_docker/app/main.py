@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 import os
 import logging
 import json
+import portalocker
 from typing import Optional
 from contextlib import asynccontextmanager
 from .executor import run_analyze
