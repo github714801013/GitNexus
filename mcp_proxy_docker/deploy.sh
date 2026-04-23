@@ -1,59 +1,59 @@
 #!/bin/bash
 set -e
 
-# --- 配置区 (根据实际环境调整) ---
-REMOTE_HOST="10.1.250.157" # 示例 IP，需根据实际情况修改
-REMOTE_USER="devops"
-REMOTE_PATH="/home/devops/gitnexus/mcp_proxy_docker"
+# --- 配置区 (根据实际远程环境调整) ---
+REMOTE_HOST="10.1.14.177" 
+REMOTE_USER="ji99"
+REMOTE_PATH="/home/ji99/Project/mcp_gitnexus_server"
 REGISTRY_URL="harbor.saas.ch999.cn:1088/common"
 IMAGE_NAME="gitnexus-mcp-proxy"
 
-# 进入项目根目录 (假设脚本在 mcp_proxy_docker/ 目录下)
-cd "$(dirname "$0")/.."
-
-echo "--- 步骤 1: 核心恢复逻辑 ---"
-if [ -d ".git" ]; then
-    git checkout -- mcp_proxy_docker/Dockerfile
-    echo "Dockerfile has been restored to original state via Git."
+# --- 智能路径探测 ---
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/Dockerfile" ]; then
+    BASE_DIR="$SCRIPT_DIR"
+    PROJECT_ROOT="$(cd "$BASE_DIR/.." && pwd)"
 else
-    echo "Warning: .git directory not found, skipping restore."
+    PROJECT_ROOT="$(pwd)"
+    BASE_DIR="$PROJECT_ROOT/mcp_proxy_docker"
 fi
+DOCKERFILE_PATH="$BASE_DIR/Dockerfile"
 
-echo "--- 步骤 2: 获取版本号 ---"
-version=$(git rev-parse --short HEAD 2>/dev/null || echo "build-${BUILD_NUMBER:-unknown}")
+echo "--- 步骤 1: 获取版本号 ---"
+cd "$PROJECT_ROOT"
+version=$(git rev-parse --short HEAD 2>/dev/null || echo "v1.0.0")
 remote_docker_image="${REGISTRY_URL}/${IMAGE_NAME}:${version}"
 
-echo "--- 步骤 3: 热修复逻辑 (替换基础镜像) ---"
-# 将默认的 node:20-bullseye 替换为私有库镜像
-sed -i 's|^FROM node:.*|FROM harbor.saas.ch999.cn:1088/common/node:20-bullseye|g' mcp_proxy_docker/Dockerfile
+echo "--- 步骤 2: 构建并推送镜像 (宿主机网络模式) ---"
+# 使用 --network=host 解决 Docker 网桥网络抖动和 DNS 慢的问题
+# 同时构建版本号镜像和 latest 镜像
+export DOCKER_BUILDKIT=0
+docker build --network=host -t "$remote_docker_image" -f "$DOCKERFILE_PATH" "$PROJECT_ROOT"
+docker tag "$remote_docker_image" "${REGISTRY_URL}/${IMAGE_NAME}:latest"
 
-echo "--- 步骤 4: 打包推送 ---"
-docker build -t "$remote_docker_image" -f mcp_proxy_docker/Dockerfile .
+echo "正在推送版本号镜像: $remote_docker_image"
 docker push "$remote_docker_image"
+echo "正在推送 latest 镜像: ${REGISTRY_URL}/${IMAGE_NAME}:latest"
+docker push "${REGISTRY_URL}/${IMAGE_NAME}:latest"
 
-echo "--- 步骤 5: 远程部署 ---"
-# 假设远程服务器已存在 restart.sh 脚本，接收镜像地址作为参数
-# 如果没有，建议在远程创建基于 docker-compose 的重启逻辑
+
+echo "--- 步骤 3: 远程服务器执行 (SSH) ---"
 ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
-    if [ -d "${REMOTE_PATH}" ]; then
-        cd "${REMOTE_PATH}"
-        # 更新镜像版本并重启
-        # 方案 A: 如果使用 docker-compose，动态设置环境变量
-        export REMOTE_IMAGE="${remote_docker_image}"
-        # 假设远程有 restart.sh 或直接执行 compose
-        if [ -f "restart.sh" ]; then
-            ./restart.sh "\$REMOTE_IMAGE"
-        else
-            docker compose pull
-            docker compose up -d
-        fi
-    else
-        echo "Error: Remote path ${REMOTE_PATH} not found."
-        exit 1
-    fi
+    mkdir -p "${REMOTE_PATH}"
+    cd "${REMOTE_PATH}"
+    echo "Updating container with latest image: ${remote_docker_image}"
+    
+    # 简单的重启逻辑
+    docker pull "${remote_docker_image}"
+    docker stop "${IMAGE_NAME}" 2>/dev/null || true
+    docker rm "${IMAGE_NAME}" 2>/dev/null || true
+    docker run -d --name "${IMAGE_NAME}" \
+        -p 1347:1347 -p 1348:1348 \
+        --restart always \
+        "${remote_docker_image}"
 EOF
 
-echo "--- 步骤 6: 清理 ---"
-docker images -f "reference=*${IMAGE_NAME}*" -f "dangling=true" -q | xargs -r docker rmi || true
+echo "--- 步骤 4: 清理本地构建镜像 ---"
+docker rmi "$remote_docker_image" || true
 
-echo "Deployment of ${remote_docker_image} completed successfully."
+echo "Local build and remote deployment completed successfully: ${remote_docker_image}"

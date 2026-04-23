@@ -6,13 +6,23 @@
  * This is critical for cross-platform CI where vitest runs from src/
  * but workers need compiled .js files.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createWorkerPool, WorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 
-const DIST_WORKER = path.resolve(__dirname, '..', '..', 'dist', 'core', 'ingestion', 'workers', 'parse-worker.js');
+const DIST_WORKER = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  'dist',
+  'core',
+  'ingestion',
+  'workers',
+  'parse-worker.js',
+);
 const hasDistWorker = fs.existsSync(DIST_WORKER);
 
 describe('worker pool integration', () => {
@@ -42,12 +52,17 @@ describe('worker pool integration', () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
     pool = createWorkerPool(workerUrl, 1);
 
-    const fixtureFile = path.resolve(__dirname, '..', 'fixtures', 'mini-repo', 'src', 'validator.ts');
+    const fixtureFile = path.resolve(
+      __dirname,
+      '..',
+      'fixtures',
+      'mini-repo',
+      'src',
+      'validator.ts',
+    );
     const content = fs.readFileSync(fixtureFile, 'utf-8');
 
-    const results = await pool.dispatch<any, any>([
-      { path: 'src/validator.ts', content },
-    ]);
+    const results = await pool.dispatch<any, any>([{ path: 'src/validator.ts', content }]);
 
     // Worker returns an array of results (one per worker chunk)
     expect(results).toHaveLength(1);
@@ -65,9 +80,10 @@ describe('worker pool integration', () => {
     pool = createWorkerPool(workerUrl, 2);
 
     const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'mini-repo', 'src');
-    const files = fs.readdirSync(fixturesDir)
-      .filter(f => f.endsWith('.ts'))
-      .map(f => ({
+    const files = fs
+      .readdirSync(fixturesDir)
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => ({
         path: `src/${f}`,
         content: fs.readFileSync(path.join(fixturesDir, f), 'utf-8'),
       }));
@@ -96,9 +112,10 @@ describe('worker pool integration', () => {
     pool = createWorkerPool(workerUrl, 1);
 
     const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'mini-repo', 'src');
-    const files = fs.readdirSync(fixturesDir)
-      .filter(f => f.endsWith('.ts'))
-      .map(f => ({
+    const files = fs
+      .readdirSync(fixturesDir)
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => ({
         path: `src/${f}`,
         content: fs.readFileSync(path.join(fixturesDir, f), 'utf-8'),
       }));
@@ -140,8 +157,9 @@ describe('worker pool integration', () => {
     await terminatedPool.terminate();
     pool = undefined; // already terminated — prevent afterEach double-terminate
 
-    await expect(terminatedPool.dispatch([{ path: 'x.ts', content: 'const x = 1;' }]))
-      .rejects.toThrow();
+    await expect(
+      terminatedPool.dispatch([{ path: 'x.ts', content: 'const x = 1;' }]),
+    ).rejects.toThrow();
   });
 
   it.skipIf(!hasDistWorker)('double terminate does not throw', async () => {
@@ -152,19 +170,57 @@ describe('worker pool integration', () => {
     pool = undefined;
   });
 
-  it.skipIf(!hasDistWorker)('dispatches entries with empty content string without crashing', async () => {
-    const workerUrl = pathToFileURL(DIST_WORKER) as URL;
+  it.skipIf(!hasDistWorker)(
+    'dispatches entries with empty content string without crashing',
+    async () => {
+      const workerUrl = pathToFileURL(DIST_WORKER) as URL;
+      pool = createWorkerPool(workerUrl, 1);
+
+      const results = await pool.dispatch<any, any>([{ path: 'empty.ts', content: '' }]);
+
+      expect(results).toHaveLength(1);
+      const result = results[0];
+      expect(typeof result.fileCount).toBe('number');
+      expect(result.fileCount).toBeGreaterThanOrEqual(0);
+      expect(Array.isArray(result.nodes)).toBe(true);
+    },
+  );
+
+  it('treats warning messages as non-terminal and still resolves the worker result', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-warning-'));
+    const workerPath = path.join(tempDir, 'warning-worker.js');
+    fs.writeFileSync(
+      workerPath,
+      `
+      const { parentPort } = require('node:worker_threads');
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          parentPort.postMessage({ type: 'warning', message: 'warning before result' });
+          parentPort.postMessage({ type: 'sub-batch-done' });
+          return;
+        }
+        if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { nodes: [], relationships: [], symbols: [], imports: [], calls: [], heritage: [], routes: [], fileCount: 1 } });
+        }
+      });
+    `,
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const workerUrl = pathToFileURL(workerPath) as URL;
     pool = createWorkerPool(workerUrl, 1);
 
-    const results = await pool.dispatch<any, any>([
-      { path: 'empty.ts', content: '' },
-    ]);
-
-    expect(results).toHaveLength(1);
-    const result = results[0];
-    expect(typeof result.fileCount).toBe('number');
-    expect(result.fileCount).toBeGreaterThanOrEqual(0);
-    expect(Array.isArray(result.nodes)).toBe(true);
+    try {
+      const results = await pool.dispatch<any, any>([
+        { path: 'warning.ts', content: 'const x = 1;' },
+      ]);
+      expect(results).toHaveLength(1);
+      expect(results[0].fileCount).toBe(1);
+      expect(warnSpy).toHaveBeenCalledWith('warning before result');
+    } finally {
+      warnSpy.mockRestore();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(!hasDistWorker)('createWorkerPool with size 0 creates pool with zero workers', () => {
