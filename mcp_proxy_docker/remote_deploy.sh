@@ -14,7 +14,7 @@ tar --exclude='node_modules' --exclude='.git' --exclude='.history' \
     gitnexus gitnexus-shared gitnexus-web mcp_proxy_docker
 
 echo "--- 步骤 2: 发送源码到远程服务器 ---"
-scp "$ARCHIVE_NAME" mcp_proxy_docker/auto_verify.py "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
+scp "$ARCHIVE_NAME" mcp_proxy_docker/auto_verify.py repos.json "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
 
 echo "--- 步骤 3: 远程执行构建与部署 ---"
 ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF

@@ -3,14 +3,19 @@ import time
 import sys
 import json
 
+import os
+
 # 配置
 BASE_URL = "http://localhost:1347/webhook/gitea"
 API_URL = "http://localhost:1349/api/repos"
-REPOS = [
-    { "full_name": "oa-java/oa-order", "clone_url": "https://code.9ji.com/oa-java/oa-order.git" },
-    { "full_name": "group-logistics/oa-stock", "clone_url": "https://code.9ji.com/group-logistics/oa-stock.git" },
-    { "full_name": "OA_CSharp/oanew", "clone_url": "https://code.9ji.com/OA_CSharp/oanew.git" }
-]
+
+# 动态读取配置
+try:
+    with open("repos.json", "r", encoding="utf-8") as f:
+        REPOS = json.load(f)
+except Exception as e:
+    print(f"读取 repos.json 失败: {e}")
+    REPOS = []
 
 def wait_for_ready(url, name, timeout=60):
     start = time.time()
@@ -29,9 +34,10 @@ def wait_for_ready(url, name, timeout=60):
 def trigger_all():
     print("--- 开始触发 Webhooks ---")
     for repo in REPOS:
+        branch = repo.get("branch", "master")
         payload = {
             "repository": repo,
-            "ref": "refs/heads/master"
+            "ref": f"refs/heads/{branch}"
         }
         try:
             r = requests.post(BASE_URL, json=payload, timeout=5)
