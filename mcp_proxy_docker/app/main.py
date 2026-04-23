@@ -64,6 +64,39 @@ async def gitea_webhook(
         # Determine local path (mapping repo_name directly to subfolders in projects_root)
         repo_path = os.path.join(projects_root, repo_name)
         
+        # Update the dynamic repos.json config file to keep track of Webhook-added repos and branches
+        repos_file = os.path.join(projects_root, "repos.json")
+        repos_list = []
+        if os.path.exists(repos_file):
+            try:
+                with open(repos_file, "r", encoding="utf-8") as f:
+                    repos_list = json.load(f)
+            except Exception:
+                pass
+        
+        found = False
+        for r in repos_list:
+            if r.get("full_name") == repo_name:
+                if clone_url:
+                    r["clone_url"] = clone_url
+                if branch:
+                    r["branch"] = branch
+                found = True
+                break
+        
+        if not found:
+            repos_list.append({
+                "full_name": repo_name,
+                "clone_url": clone_url,
+                "branch": branch or "master"
+            })
+            
+        try:
+            with open(repos_file, "w", encoding="utf-8") as f:
+                json.dump(repos_list, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Failed to update repos.json: {e}")
+
         logger.info(f"Queueing indexing for {repo_name} (URL: {clone_url}, Branch: {branch}) at {repo_path}")
         # Pass clone_url and branch to background task to allow cloning and switching branches
         background_tasks.add_task(run_analyze, repo_path, clone_url, branch)

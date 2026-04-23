@@ -2,16 +2,16 @@
   {
     "full_name": "oa-java/oa-order",
     "clone_url": "https://code.9ji.com/oa-java/oa-order.git",
-    "branch": "master"
+    "branch": "dev"
   },
   {
     "full_name": "group-logistics/oa-stock",
     "clone_url": "https://code.9ji.com/group-logistics/oa-stock.git",
-    "branch": "master"
+    "branch": "dev"
   },
   {
     "full_name": "OA_CSharp/oanew",
     "clone_url": "https://code.9ji.com/OA_CSharp/oanew.git",
-    "branch": "master"
+    "branch": "test-new"
   }
 ]

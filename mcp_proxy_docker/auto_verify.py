@@ -9,13 +9,39 @@ import os
 BASE_URL = "http://localhost:1347/webhook/gitea"
 API_URL = "http://localhost:1349/api/repos"
 
-# 动态读取配置
+LOCAL_REPOS = "repos.json"
+REMOTE_REPOS = "/home/ji99/gitnexus/repos.json"
+
+repos_dict = {}
+
+# 加载远端运行环境现有的项目配置（来自真实 Webhook 更新或历史记录）
+if os.path.exists(REMOTE_REPOS):
+    try:
+        with open(REMOTE_REPOS, "r", encoding="utf-8") as f:
+            for r in json.load(f):
+                if r.get("full_name"):
+                    repos_dict[r["full_name"]] = r
+    except Exception as e:
+        print(f"读取远程 repos.json 失败: {e}")
+
+# 加载本地部署包带过来的配置，如果存在相同项目，则覆盖远端（方便修改分支或 URL）
+if os.path.exists(LOCAL_REPOS):
+    try:
+        with open(LOCAL_REPOS, "r", encoding="utf-8") as f:
+            for r in json.load(f):
+                if r.get("full_name"):
+                    repos_dict[r["full_name"]] = r
+    except Exception as e:
+        print(f"读取本地 repos.json 失败: {e}")
+
+REPOS = list(repos_dict.values())
+
+# 将合并后的配置写回远程文件，作为源配置
 try:
-    with open("repos.json", "r", encoding="utf-8") as f:
-        REPOS = json.load(f)
+    with open(REMOTE_REPOS, "w", encoding="utf-8") as f:
+        json.dump(REPOS, f, indent=2, ensure_ascii=False)
 except Exception as e:
-    print(f"读取 repos.json 失败: {e}")
-    REPOS = []
+    print(f"同步写入 {REMOTE_REPOS} 失败: {e}")
 
 def wait_for_ready(url, name, timeout=60):
     start = time.time()
