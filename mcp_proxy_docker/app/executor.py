@@ -59,8 +59,11 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
                     check=False
                 )
                 if result.returncode != 0:
-                    # Don't log the full command to avoid leaking token in logs if git includes it in stderr
                     logger.error(f"Failed to clone repository. Exit code: {result.returncode}")
+                    if result.stderr:
+                        # Clean stderr to avoid leaking token
+                        clean_err = result.stderr.replace(os.getenv("GITEA_TOKEN", "MISSING_TOKEN"), "****")
+                        logger.error(f"Clone error: {clean_err}")
                     return False
             except Exception as e:
                 logger.error(f"Error during cloning: {str(e)}")
@@ -135,6 +138,11 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
             
             # Use HF mirror to bypass proxy timeout issues for transformers.js
             env["HF_ENDPOINT"] = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
+            
+            # Explicitly set embedding model for Chinese support (bge-small-zh-v1.5)
+            env["GITNEXUS_EMBEDDING_MODEL"] = "Xenova/bge-small-zh-v1.5"
+            env["GITNEXUS_EMBEDDING_DIMS"] = "512"
+            env["GITNEXUS_FTS_STEMMER"] = "none"
             
             # Add --force to ensure registry is updated even if repo is "Already up to date"
             result = subprocess.run(

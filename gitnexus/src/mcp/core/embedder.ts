@@ -14,7 +14,7 @@ import {
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 // Model config
-const MODEL_ID = 'Xenova/bge-small-zh-v1.5';
+const MODEL_ID = process.env.GITNEXUS_EMBEDDING_MODEL || 'Xenova/bge-small-zh-v1.5';
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
@@ -121,7 +121,7 @@ export const embedQuery = async (query: string): Promise<number[]> => {
  * Get embedding dimensions
  */
 export const getEmbeddingDims = (): number => {
-  return getHttpDimensions() ?? 512;
+  return getHttpDimensions() ?? parseInt(process.env.GITNEXUS_EMBEDDING_DIMS || '512', 10);
 };
 
 /**

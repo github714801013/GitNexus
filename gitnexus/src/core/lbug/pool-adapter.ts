@@ -358,7 +358,20 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       await available[0].query('LOAD EXTENSION fts');
       shared.ftsLoaded = true;
     } catch {
-      // Extension may not be installed — FTS queries will fail gracefully
+      // Extension may not be installed — try INSTALL then LOAD (requires network)
+      try {
+        await available[0].query('INSTALL fts');
+        await available[0].query('LOAD EXTENSION fts');
+        shared.ftsLoaded = true;
+      } catch (err: any) {
+        const msg = err?.message || '';
+        if (msg.includes('already loaded') || msg.includes('already installed')) {
+          shared.ftsLoaded = true;
+        } else {
+          // FTS queries will fail gracefully if extension load fails
+          console.warn(`[gitnexus] FTS extension load failed: ${msg}`);
+        }
+      }
     }
   }
 
@@ -437,7 +450,20 @@ export async function initLbugWithDb(
       await available[0].query('LOAD EXTENSION fts');
       shared.ftsLoaded = true;
     } catch {
-      // Extension may already be loaded or not installed
+      // Extension may not be installed — try INSTALL then LOAD (requires network)
+      try {
+        await available[0].query('INSTALL fts');
+        await available[0].query('LOAD EXTENSION fts');
+        shared.ftsLoaded = true;
+      } catch (err: any) {
+        const msg = err?.message || '';
+        if (msg.includes('already loaded') || msg.includes('already installed')) {
+          shared.ftsLoaded = true;
+        } else {
+          // FTS queries will fail gracefully if extension load fails
+          console.warn(`[gitnexus] FTS extension load failed: ${msg}`);
+        }
+      }
     }
   }
 

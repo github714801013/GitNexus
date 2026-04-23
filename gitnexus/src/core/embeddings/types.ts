@@ -227,9 +227,9 @@ export interface EmbeddingConfig {
  * Tries WebGPU first (fast), user can choose WASM fallback if unavailable
  */
 export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
-  modelId: 'Xenova/bge-small-zh-v1.5',
+  modelId: process.env.GITNEXUS_EMBEDDING_MODEL || 'Xenova/bge-small-zh-v1.5',
   batchSize: 16,
-  dimensions: 512,
+  dimensions: parseInt(process.env.GITNEXUS_EMBEDDING_DIMS || '512', 10),
   device: 'auto',
   maxSnippetLength: 500,
   chunkSize: 1200,

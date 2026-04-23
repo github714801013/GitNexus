@@ -43,17 +43,36 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
     cd "${REMOTE_PATH}"
     echo "Updating container with latest image: ${remote_docker_image}"
     
-    # 简单的重启逻辑
     docker pull "${remote_docker_image}"
     docker stop "${IMAGE_NAME}" 2>/dev/null || true
     docker rm "${IMAGE_NAME}" 2>/dev/null || true
+
+    # 完整的容器运行命令：映射所有端口并挂载项目目录
     docker run -d --name "${IMAGE_NAME}" \
-        -p 1347:1347 -p 1348:1348 \
+        -p 1347:1347 -p 1348:1348 -p 1349:1349 -p 1350:1350 \
+        -v /projects:/projects \
         --restart always \
         "${remote_docker_image}"
+
+    echo "--- 步骤 4: 自动触发所有项目索引 ---"
+    # 等待服务启动
+    sleep 5
+    
+    # 获取 /projects 下的所有一级目录并触发 Webhook
+    # 我们假设目录名即为项目名，这里通过简单的 find 命令获取
+    find /projects -maxdepth 2 -mindepth 2 -type d | while read dir; do
+        rel_path=${dir#/projects/}
+        # 转换路径为 Gitea Webhook 格式
+        # 假设 clone_url 可以通过某种方式推导，或者直接使用本地路径模式（如果 Webhook 支持）
+        # 根据 main.py 逻辑，它支持 full_name 定位
+        echo "Triggering re-index for project: $rel_path"
+        curl -s -X POST "http://localhost:1347/webhook/gitea" \
+            -H "Content-Type: application/json" \
+            -d "{\"repository\": {\"full_name\": \"$rel_path\", \"clone_url\": \"https://code.9ji.com/$rel_path.git\"}, \"ref\": \"refs/heads/master\"}"
+    done
 EOF
 
-echo "--- 步骤 4: 清理本地构建镜像 ---"
+echo "--- 步骤 5: 清理本地构建镜像 ---"
 docker rmi "$remote_docker_image" || true
 
 echo "Local build and remote deployment completed successfully: ${remote_docker_image}"

@@ -1068,12 +1068,11 @@ export class LocalBackend {
             CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
           YIELD node AS emb, distance
           WITH emb, distance
-          WHERE distance < 0.6
+          WHERE distance < 0.9
           RETURN emb.nodeId AS nodeId, emb.chunkIndex AS chunkIndex,
                  emb.startLine AS startLine, emb.endLine AS endLine, distance
           ORDER BY distance
         `;
-
         const embResults = await executeQuery(repo.id, vectorQuery);
         return embResults.map((row) => ({
           nodeId: row.nodeId ?? row[0],

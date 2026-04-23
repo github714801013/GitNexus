@@ -18,6 +18,7 @@ import {
   getLbugStats,
   executeQuery,
   executeWithReusedStatement,
+  ensureFTSIndex,
   closeLbug,
   loadCachedEmbeddings,
 } from './lbug/lbug-adapter.js';
@@ -32,8 +33,9 @@ import {
 import { getCurrentCommit, getRemoteUrl, hasGitDir, getInferredRepoName } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
-import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
+import { EMBEDDING_TABLE_NAME, CREATE_VECTOR_INDEX_QUERY } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
+import { FTS_INDEXES } from './search/bm25-index.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -302,7 +304,6 @@ export async function runFullAnalysis(
 
     // ── Phase 5: Finalize (98–100%) ───────────────────────────────────
     progress('done', 98, 'Saving metadata...');
-
     // Count embeddings in the index (cached + newly generated)
     let embeddingCount = 0;
     try {

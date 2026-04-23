@@ -25,6 +25,7 @@ RUN apt-get update -y && apt-get install -y --fix-missing \
     util-linux \
     && git config --global user.email "gitnexus@example.com" \
     && git config --global user.name "GitNexus Builder" \
+    && git config --global --add safe.directory "*" \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --fix-missing nodejs \
     && ln -s /usr/bin/python3 /usr/bin/python \
@@ -32,7 +33,9 @@ RUN apt-get update -y && apt-get install -y --fix-missing \
 
 # 2. 核心参数配置
 ENV PATH="/app/gitnexus/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
-ENV HF_HOME="/root/.cache/huggingface"
+ENV HF_HOME="/app/models"
+ENV XENOVA_CACHE="/app/models"
+ENV HF_ENDPOINT="https://hf-mirror.com"
 
 WORKDIR /app
 
@@ -59,9 +62,10 @@ RUN npm install --registry=http://registry.npmmirror.com --no-audit --no-fund --
     cp package.json dist/gitnexus/ && \
     mkdir -p dist/gitnexus/vendor && \
     cp -r vendor/* dist/gitnexus/vendor/ && \
-    chmod +x dist/gitnexus/src/cli/index.js && \
-    pip3 install --no-cache-dir -i http://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com --break-system-packages huggingface_hub "httpx[socks]" && \
-    HF_ENDPOINT=https://hf-mirror.com hf download Xenova/bge-small-zh-v1.5 || true
+    chmod +x dist/gitnexus/src/cli/index.js
+
+# 5.5 集成本地下载的模型
+COPY mcp_proxy_docker/models /app/models
 
 # 6. 构建 GitNexus Web (Frontend)
 WORKDIR /app/gitnexus-web

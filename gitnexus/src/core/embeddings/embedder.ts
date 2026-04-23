@@ -163,11 +163,14 @@ export const initEmbedder = async (
       // ./node_modules/.cache inside its own install dir, which is unwritable
       // when gitnexus is installed globally (e.g. /usr/lib/node_modules/).
       // Respect HF_HOME if set, otherwise fall back to ~/.cache/huggingface.
-      env.cacheDir = process.env.HF_HOME ?? `${process.env.HOME}/.cache/huggingface`;
+      const cacheDir = process.env.HF_HOME ?? `${process.env.HOME}/.cache/huggingface`;
+      env.cacheDir = cacheDir;
+      // Also set localModelPath for transformers.js v3 compatibility
+      (env as any).localModelPath = cacheDir;
 
-      const isDev = process.env.NODE_ENV === 'development';
+      const isDev = process.env.NODE_ENV === 'development' || process.env.GITNEXUS_DEBUG === 'true';
       if (isDev) {
-        console.log(`🧠 Loading embedding model: ${finalConfig.modelId}`);
+        console.log(`🧠 Loading embedding model: ${finalConfig.modelId} from ${cacheDir}`);
       }
 
       const progressCallback = onProgress

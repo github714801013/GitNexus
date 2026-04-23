@@ -1212,7 +1212,7 @@ export const createFTSIndex = async (
   tableName: string,
   indexName: string,
   properties: string[],
-  stemmer: string = 'porter',
+  stemmer: string = process.env.GITNEXUS_FTS_STEMMER || 'porter',
 ): Promise<void> => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
@@ -1247,7 +1247,7 @@ export const ensureFTSIndex = async (
   tableName: string,
   indexName: string,
   properties: string[],
-  stemmer: string = 'porter',
+  stemmer: string = process.env.GITNEXUS_FTS_STEMMER || 'porter',
 ): Promise<void> => {
   const key = `${tableName}:${indexName}`;
   if (ensuredFTSIndexes.has(key)) return;

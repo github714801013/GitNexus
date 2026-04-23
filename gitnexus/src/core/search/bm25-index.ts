@@ -25,7 +25,7 @@ export interface BM25SearchResult {
  * CLI/pipeline path and the MCP pool path use identical (table, index,
  * properties) tuples and the lazy-create logic stays in one place.
  */
-const FTS_INDEXES: ReadonlyArray<{
+export const FTS_INDEXES: ReadonlyArray<{
   table: string;
   indexName: string;
   properties: readonly string[];
@@ -95,7 +95,7 @@ async function ensureFTSIndexViaExecutor(
   const propList = properties.map((p) => `'${p}'`).join(', ');
   try {
     await executor(
-      `CALL CREATE_FTS_INDEX('${table}', '${indexName}', [${propList}], stemmer := 'porter')`,
+      `CALL CREATE_FTS_INDEX('${table}', '${indexName}', [${propList}], stemmer := 'none')`,
     );
     // Index was created successfully — safe to cache.
     ensuredPoolFTS.add(key);

@@ -823,9 +823,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         let searchResults: any[];
 
         if (mode === 'semantic') {
-          const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
+          const { isEmbedderReady, initEmbedder } = await import('../core/embeddings/embedder.js');
           if (!isEmbedderReady()) {
-            return [] as any[];
+            console.info('[api] Initializing embedder for semantic search...');
+            await initEmbedder();
           }
           const { semanticSearch: semSearch } =
             await import('../core/embeddings/embedding-pipeline.js');
@@ -846,7 +847,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           }));
         } else {
           // hybrid (default)
-          const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
+          const { isEmbedderReady, initEmbedder } = await import('../core/embeddings/embedder.js');
+          if (!isEmbedderReady()) {
+            console.info('[api] Initializing embedder for hybrid search...');
+            await initEmbedder().catch((err) =>
+              console.error('[api] Failed to initialize embedder for hybrid search:', err),
+            );
+          }
+
           if (isEmbedderReady()) {
             const { semanticSearch: semSearch } =
               await import('../core/embeddings/embedding-pipeline.js');
@@ -1563,8 +1571,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // to the caller instead of crashing with an unhandled 'error' event.
   await new Promise<void>((resolve, reject) => {
     const server = app.listen(port, host, () => {
-      const displayHost = host === '::' || host === '0.0.0.0' ? 'localhost' : host;
-      console.log(`GitNexus server running on http://${displayHost}:${port}`);
+      console.log(`GitNexus server running on http://${host}:${port}`);
       resolve();
     });
     server.on('error', (err) => reject(err));
