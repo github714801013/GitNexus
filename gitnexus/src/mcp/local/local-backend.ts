@@ -547,9 +547,18 @@ export class LocalBackend {
       const siblings = h.remoteUrl
         ? (byRemote.get(h.remoteUrl) ?? []).filter((e) => norm(e.repoPath) !== selfNorm)
         : [];
+
+      let displayPath = h.repoPath;
+      if (process.env.GITNEXUS_REMOTE_DEPLOY === 'true') {
+        const projectsRoot = process.env.PROJECTS_ROOT || '/projects';
+        if (displayPath.startsWith(projectsRoot)) {
+          displayPath = displayPath.substring(projectsRoot.length).replace(/^[/\\]+/, '');
+        }
+      }
+
       return {
         name: h.name,
-        path: h.repoPath,
+        path: displayPath,
         indexedAt: h.indexedAt,
         lastCommit: h.lastCommit,
         remoteUrl: h.remoteUrl,
