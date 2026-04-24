@@ -223,13 +223,12 @@ export interface EmbeddingConfig {
 
 /**
  * Default embedding configuration
- * Uses bge-small-zh-v1.5 for Chinese language support
- * Tries WebGPU first (fast), user can choose WASM fallback if unavailable
+ * Uses gte-Qwen2-1.5B-instruct by default for high precision with GPU acceleration
  */
 export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
-  modelId: process.env.GITNEXUS_EMBEDDING_MODEL || 'Xenova/bge-small-zh-v1.5',
+  modelId: process.env.GITNEXUS_EMBEDDING_MODEL || 'Alibaba-NLP/gte-Qwen2-1.5B-instruct',
   batchSize: 16,
-  dimensions: parseInt(process.env.GITNEXUS_EMBEDDING_DIMS || '512', 10),
+  dimensions: parseInt(process.env.GITNEXUS_EMBEDDING_DIMS || '1536', 10),
   device: 'auto',
   maxSnippetLength: 500,
   chunkSize: 1200,

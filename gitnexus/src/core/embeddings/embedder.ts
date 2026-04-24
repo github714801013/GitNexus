@@ -297,11 +297,16 @@ export const initEmbedder = async (
             console.log('🔧 Using WASM backend (slower)...');
           }
 
+          const session_options: any = { logSeverityLevel: 3 };
+          if (device === 'cuda' && process.env.GITNEXUS_USE_FLASH_ATTENTION === 'true') {
+            session_options.use_flash_attention = true;
+          }
+
           embedderInstance = await (pipeline as any)('feature-extraction', finalConfig.modelId, {
             device: device,
             dtype: 'fp32',
             progress_callback: progressCallback,
-            session_options: { logSeverityLevel: 3 },
+            session_options,
           });
           currentDevice = device;
 

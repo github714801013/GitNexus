@@ -144,9 +144,10 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
             # Use HF mirror to bypass proxy timeout issues for transformers.js
             env["HF_ENDPOINT"] = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
             
-            # Explicitly set embedding model for Chinese support (bge-small-zh-v1.5)
-            env["GITNEXUS_EMBEDDING_MODEL"] = os.getenv("GITNEXUS_EMBEDDING_MODEL", "Xenova/bge-small-zh-v1.5")
-            env["GITNEXUS_EMBEDDING_DIMS"] = os.getenv("GITNEXUS_EMBEDDING_DIMS", "512")
+            # Explicitly set embedding model for Chinese support (gte-Qwen2-1.5B-instruct)
+            env["GITNEXUS_EMBEDDING_MODEL"] = os.getenv("GITNEXUS_EMBEDDING_MODEL", "Alibaba-NLP/gte-Qwen2-1.5B-instruct")
+            env["GITNEXUS_EMBEDDING_DIMS"] = os.getenv("GITNEXUS_EMBEDDING_DIMS", "1536")
+            env["GITNEXUS_USE_FLASH_ATTENTION"] = os.getenv("GITNEXUS_USE_FLASH_ATTENTION", "true")
             env["GITNEXUS_FTS_STEMMER"] = os.getenv("GITNEXUS_FTS_STEMMER", "none")
             env["GITNEXUS_EMBEDDING_LIMIT"] = os.getenv("GITNEXUS_EMBEDDING_LIMIT", "500000")
             env["GITNEXUS_REMOTE_DEPLOY"] = os.getenv("GITNEXUS_REMOTE_DEPLOY", "true")

@@ -14,7 +14,7 @@ import {
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 // Model config
-const MODEL_ID = process.env.GITNEXUS_EMBEDDING_MODEL || 'Xenova/bge-small-zh-v1.5';
+const MODEL_ID = process.env.GITNEXUS_EMBEDDING_MODEL || 'Alibaba-NLP/gte-Qwen2-1.5B-instruct';
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
@@ -70,10 +70,16 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
           // own stdout patching (independent patching caused restore-order bugs).
           silenceStdout();
           process.stderr.write = (() => true) as any;
+          const sessionOptions: any = { logSeverityLevel: 3 };
+          if (device === 'cuda' && process.env.GITNEXUS_USE_FLASH_ATTENTION === 'true') {
+            sessionOptions.use_flash_attention = true;
+          }
+
           try {
             embedderInstance = await (pipeline as any)('feature-extraction', MODEL_ID, {
               device: device,
               dtype: 'fp32',
+              session_options: sessionOptions,
             });
           } finally {
             restoreStdout();
