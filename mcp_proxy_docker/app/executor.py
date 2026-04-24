@@ -168,6 +168,11 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
             
             if result.returncode == 0:
                 logger.info(f"Successfully indexed {repo_path}")
+                # Fix permissions so non-root processes (serve/mcp) can write FTS indexes
+                gitnexus_dir = os.path.join(repo_path, ".gitnexus")
+                if os.path.isdir(gitnexus_dir):
+                    subprocess.run(["chmod", "-R", "a+rw", gitnexus_dir], check=False)
+                    subprocess.run(["chmod", "a+rwx", gitnexus_dir], check=False)
                 return True
             else:
                 logger.error(f"Failed to index {repo_path}. Exit code: {result.returncode}")
