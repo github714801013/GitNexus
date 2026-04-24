@@ -1,5 +1,5 @@
-# 使用 Ubuntu 24.04 以获取更高版本的 GLIBCXX
-FROM ubuntu:24.04
+# 使用 NVIDIA CUDA 12 Runtime 作为基底
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
 
 # 配置代理 (加速构建)
 ENV http_proxy=http://10.1.14.185:10808
@@ -9,9 +9,6 @@ ENV no_proxy=localhost,127.0.0.1,10.1.14.177,10.1.14.185
 
 # 避免交互式提示
 ENV DEBIAN_FRONTEND=noninteractive
-
-# 替换为阿里云国内镜像源以提高下载速度并解决 503 错误
-RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list.d/ubuntu.sources || true
 
 # 1. 系统底层工具 & Node.js 22
 RUN apt-get update -y && apt-get install -y --fix-missing \

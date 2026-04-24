@@ -12,6 +12,7 @@ export GITNEXUS_EMBEDDING_MODEL="Xenova/bge-small-zh-v1.5"
 export GITNEXUS_EMBEDDING_DIMS="512"
 export GITNEXUS_FTS_STEMMER="none"
 export GITNEXUS_REMOTE_DEPLOY="true"
+export GITNEXUS_EMBEDDING_DEVICE="cuda"
 
 # Change directory to the proxy app
 cd /app/mcp_proxy

@@ -23,6 +23,13 @@ services:
       # Map host .gitnexus config/indices to the same path for persistence
       - ${HOME}/.gitnexus:/root/.gitnexus
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
 networks:
   default:

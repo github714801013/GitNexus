@@ -140,10 +140,14 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
             env["HF_ENDPOINT"] = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
             
             # Explicitly set embedding model for Chinese support (bge-small-zh-v1.5)
-            env["GITNEXUS_EMBEDDING_MODEL"] = "Xenova/bge-small-zh-v1.5"
-            env["GITNEXUS_EMBEDDING_DIMS"] = "512"
-            env["GITNEXUS_FTS_STEMMER"] = "none"
-            env["GITNEXUS_EMBEDDING_LIMIT"] = "500000"
+            env["GITNEXUS_EMBEDDING_MODEL"] = os.getenv("GITNEXUS_EMBEDDING_MODEL", "Xenova/bge-small-zh-v1.5")
+            env["GITNEXUS_EMBEDDING_DIMS"] = os.getenv("GITNEXUS_EMBEDDING_DIMS", "512")
+            env["GITNEXUS_FTS_STEMMER"] = os.getenv("GITNEXUS_FTS_STEMMER", "none")
+            env["GITNEXUS_EMBEDDING_LIMIT"] = os.getenv("GITNEXUS_EMBEDDING_LIMIT", "500000")
+            env["GITNEXUS_REMOTE_DEPLOY"] = os.getenv("GITNEXUS_REMOTE_DEPLOY", "true")
+            
+            if os.getenv("GITNEXUS_EMBEDDING_DEVICE"):
+                env["GITNEXUS_EMBEDDING_DEVICE"] = os.getenv("GITNEXUS_EMBEDDING_DEVICE")
             
             # Add --force to ensure registry is updated even if repo is "Already up to date"
             result = subprocess.run(

@@ -53,7 +53,13 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
       // Try GPU first (DirectML on Windows, CUDA on Linux), fall back to CPU
       const isWindows = process.platform === 'win32';
       const gpuDevice = isWindows ? 'dml' : 'cuda';
-      const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> = [gpuDevice, 'cpu'];
+      const devicesToTry: Array<'dml' | 'cuda' | 'cpu'> = [];
+
+      if (process.env.GITNEXUS_EMBEDDING_DEVICE) {
+        devicesToTry.push(process.env.GITNEXUS_EMBEDDING_DEVICE as any);
+      } else {
+        devicesToTry.push(gpuDevice, 'cpu');
+      }
 
       for (const device of devicesToTry) {
         try {
