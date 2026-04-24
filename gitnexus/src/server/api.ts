@@ -428,6 +428,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const app = express();
   app.disable('x-powered-by');
 
+  // Embedder init promise cache — prevents concurrent /v1/embeddings requests
+  // from triggering multiple initEmbedder() calls before the first one completes.
+  let _embedderInitPromise: Promise<unknown> | null = null;
+
   // CORS: allow localhost, private/LAN networks, and the deployed site.
   // Non-browser requests (curl, server-to-server) have no origin and are allowed.
   // Disallowed origins get the response without Access-Control-Allow-Origin,
@@ -1435,7 +1439,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         '../core/embeddings/embedder.js'
       );
       if (!isEmbedderReady()) {
-        await initEmbedder();
+        if (!_embedderInitPromise) {
+          _embedderInitPromise = initEmbedder().catch((err) => {
+            _embedderInitPromise = null;
+            throw err;
+          });
+        }
+        await _embedderInitPromise;
       }
 
       const vectors = await embedBatch(texts);
