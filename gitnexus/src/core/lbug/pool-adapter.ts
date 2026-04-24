@@ -299,9 +299,10 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
   let shared = dbCache.get(dbPath);
   if (!shared) {
-    // Open in read-only mode — MCP server never writes to the database.
-    // This allows multiple MCP server instances to read concurrently, and
-    // avoids lock conflicts when `gitnexus analyze` is writing.
+    // Open in read-write mode so FTS index creation (CREATE_FTS_INDEX) works
+    // on first query after analyze. Read-only mode caused "Cannot execute write
+    // operations in a read-only database" for FTS ensure calls.
+    // Lock conflicts with a concurrent analyze are handled by the retry loop below.
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
       silenceStdout();
@@ -310,7 +311,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           dbPath,
           0, // bufferManagerSize (default)
           false, // enableCompression (default)
-          true, // readOnly
+          false, // readOnly=false: need write access for CREATE_FTS_INDEX
         );
         restoreStdout();
         shared = { db, refCount: 0, ftsLoaded: false, vectorLoaded: false };

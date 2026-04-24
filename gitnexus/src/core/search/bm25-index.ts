@@ -107,10 +107,7 @@ async function ensureFTSIndexViaExecutor(
     // cached failure (which previously disabled BM25 for the whole
     // process for that repo).
     const msg = String(e?.message ?? '');
-    if (msg.includes('already exists') || msg.includes('read-only') || msg.includes('read only')) {
-      // 'already exists': index persists on disk — safe to cache.
-      // 'read-only': MCP opens DB in readOnly mode; analyze already created the
-      // index, so treat this as "already exists" and proceed with queries.
+    if (msg.includes('already exists')) {
       ensuredPoolFTS.add(key);
     } else {
       console.warn(
