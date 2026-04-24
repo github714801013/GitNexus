@@ -13,6 +13,9 @@ export GITNEXUS_EMBEDDING_DIMS="512"
 export GITNEXUS_FTS_STEMMER="none"
 export GITNEXUS_REMOTE_DEPLOY="true"
 export GITNEXUS_EMBEDDING_DEVICE="cuda"
+# 持久化 registry 到挂载卷，避免容器重启后丢失索引注册信息
+export GITNEXUS_HOME="/projects/.gitnexus"
+mkdir -p "$GITNEXUS_HOME"
 
 # Ensure CUDA and cuDNN libraries are found
 export LD_LIBRARY_PATH="/usr/local/cuda-12/targets/x86_64-linux/lib:/usr/local/cuda-12/compat:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
