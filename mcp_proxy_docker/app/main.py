@@ -17,10 +17,13 @@ def get_projects_root():
     # 宿主机环境通过环境变量注入此路径
     return os.getenv("PROJECTS_ROOT", "/projects")
 
-_startup_executor = ThreadPoolExecutor(max_workers=2)
+_startup_executor = ThreadPoolExecutor(max_workers=1)
+_analyze_semaphore: asyncio.Semaphore | None = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _analyze_semaphore
+    _analyze_semaphore = asyncio.Semaphore(1)
     projects_root = get_projects_root()
     logger.info(f"Starting GitNexus MCP Proxy in Trust Mode with PROJECTS_ROOT={projects_root}")
 
@@ -127,7 +130,13 @@ async def gitea_webhook(
 
         logger.info(f"Queueing indexing for {repo_name} (URL: {clone_url}, Branch: {branch}) at {repo_path}")
         # Pass clone_url and branch to background task to allow cloning and switching branches
-        background_tasks.add_task(run_analyze, repo_path, clone_url, branch)
+        async def _guarded_analyze():
+            async with _analyze_semaphore:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, run_analyze, repo_path, clone_url, branch
+                )
+
+        background_tasks.add_task(_guarded_analyze)
         
         return {"status": "accepted", "repository": repo_name, "path": repo_path}
     except HTTPException:
