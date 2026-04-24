@@ -143,6 +143,7 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
             env["GITNEXUS_EMBEDDING_MODEL"] = "Xenova/bge-small-zh-v1.5"
             env["GITNEXUS_EMBEDDING_DIMS"] = "512"
             env["GITNEXUS_FTS_STEMMER"] = "none"
+            env["GITNEXUS_EMBEDDING_LIMIT"] = "500000"
             
             # Add --force to ensure registry is updated even if repo is "Already up to date"
             result = subprocess.run(
