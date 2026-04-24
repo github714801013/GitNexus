@@ -1413,6 +1413,45 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   const embedJobManager = new JobManager();
 
+  // POST /v1/embeddings — OpenAI-compatible embedding endpoint
+  // Allows analyze subprocesses to use this serve process as the sole GPU holder.
+  // Activated by setting GITNEXUS_EMBEDDING_URL=http://localhost:<port>/v1 in analyze env.
+  app.post('/v1/embeddings', async (req, res) => {
+    try {
+      const { input, model: _model } = req.body as { input: string | string[]; model?: string };
+      if (!input) {
+        res.status(400).json({ error: 'Missing required field: input' });
+        return;
+      }
+
+      const texts = Array.isArray(input) ? input : [input];
+      if (texts.length === 0) {
+        res.json({ object: 'list', data: [], model: 'local' });
+        return;
+      }
+
+      // Lazy-load embedder to avoid loading onnxruntime-node at server startup
+      const { initEmbedder, embedBatch, isEmbedderReady } = await import(
+        '../core/embeddings/embedder.js'
+      );
+      if (!isEmbedderReady()) {
+        await initEmbedder();
+      }
+
+      const vectors = await embedBatch(texts);
+      const data = vectors.map((vec, index) => ({
+        object: 'embedding',
+        index,
+        embedding: Array.from(vec),
+      }));
+
+      res.json({ object: 'list', data, model: 'local' });
+    } catch (err: any) {
+      console.error('POST /v1/embeddings error:', err);
+      res.status(500).json({ error: err.message ?? 'Embedding failed' });
+    }
+  });
+
   // POST /api/embed — trigger server-side embedding generation
   app.post('/api/embed', async (req, res) => {
     try {
