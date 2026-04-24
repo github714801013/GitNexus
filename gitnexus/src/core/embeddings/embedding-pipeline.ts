@@ -447,9 +447,10 @@ export const runEmbeddingPipeline = async (
 
       // Embed chunk texts in sub-batches to control memory
       // GPU benefits from larger batches (64+); CPU uses smaller batches to avoid OOM
+      // Reduced default GPU sub-batch size to 16 to be safer on diverse hardware.
       const EMBED_SUB_BATCH = process.env.GITNEXUS_EMBEDDING_BATCH_SIZE
         ? parseInt(process.env.GITNEXUS_EMBEDDING_BATCH_SIZE, 10)
-        : getCurrentDevice() === 'cuda' || getCurrentDevice() === 'dml' ? 64 : 8;
+        : getCurrentDevice() === 'cuda' || getCurrentDevice() === 'dml' ? 16 : 8;
       for (let si = 0; si < allTexts.length; si += EMBED_SUB_BATCH) {
         const subTexts = allTexts.slice(si, si + EMBED_SUB_BATCH);
         const subUpdates = allUpdates.slice(si, si + EMBED_SUB_BATCH);

@@ -69,13 +69,18 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
                 logger.error(f"Error during cloning: {str(e)}")
                 return False
 
-    # 2. Proceed with Update and Analyze using a Lock
+    # 2. Proceed with Update and Analyze using a Global Lock and per-repo Lock
+    # Use a global lock to prevent concurrent GPU-heavy tasks
+    global_lock_file = os.path.join(os.getenv("PROJECTS_ROOT", "/projects"), ".gitnexus_global.lock")
     lock_file = os.path.join(repo_path, ".gitnexus_analyze.lock")
     
     try:
-        with portalocker.Lock(lock_file, timeout=60):
-            # Mark directory as safe for git (to avoid dubious ownership issues in Docker)
-            subprocess.run(["git", "config", "--global", "--add", "safe.directory", repo_path], check=False)
+        # First acquire global lock (wait up to 1 hour for others to finish)
+        with portalocker.Lock(global_lock_file, timeout=3600):
+            # Then acquire per-repo lock
+            with portalocker.Lock(lock_file, timeout=60):
+                # Mark directory as safe for git (to avoid dubious ownership issues in Docker)
+                subprocess.run(["git", "config", "--global", "--add", "safe.directory", repo_path], check=False)
 
             # Ensure the latest code is pulled before indexing
             logger.info(f"Updating latest changes for {repo_path}")
