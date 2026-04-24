@@ -142,6 +142,25 @@ let isInitializing = false;
 let initPromise: Promise<FeatureExtractionPipeline> | null = null;
 let currentDevice: 'dml' | 'cuda' | 'cpu' | 'wasm' | null = null;
 
+// 进程内 GPU 串行锁：防止并发 embedText/embedBatch 同时触发 ONNX 推理
+// 使用 promise chain 实现无依赖的 async mutex
+let _gpuLock: Promise<void> = Promise.resolve();
+
+async function withGpuLock<T>(fn: () => Promise<T>): Promise<T> {
+  if (isHttpMode()) return fn();
+  const prev = _gpuLock;
+  let release!: () => void;
+  _gpuLock = new Promise<void>((r) => {
+    release = r;
+  });
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
 /**
  * Progress callback type for model loading
  */
@@ -340,15 +359,11 @@ export const embedText = async (text: string): Promise<Float32Array> => {
     return vec;
   }
 
-  const embedder = getEmbedder();
-
-  const result = await embedder(text, {
-    pooling: 'mean',
-    normalize: true,
+  return withGpuLock(async () => {
+    const embedder = getEmbedder();
+    const result = await embedder(text, { pooling: 'mean', normalize: true });
+    return new Float32Array(result.data as ArrayLike<number>);
   });
-
-  // Result is a Tensor, convert to Float32Array
-  return new Float32Array(result.data as ArrayLike<number>);
 };
 
 /**
@@ -359,35 +374,23 @@ export const embedText = async (text: string): Promise<Float32Array> => {
  * @returns Array of Float32Array embedding vectors
  */
 export const embedBatch = async (texts: string[]): Promise<Float32Array[]> => {
-  if (texts.length === 0) {
-    return [];
-  }
+  if (texts.length === 0) return [];
 
-  if (isHttpMode()) {
-    return httpEmbed(texts);
-  }
+  if (isHttpMode()) return httpEmbed(texts);
 
-  const embedder = getEmbedder();
-
-  // Process batch
-  const result = await embedder(texts, {
-    pooling: 'mean',
-    normalize: true,
+  return withGpuLock(async () => {
+    const embedder = getEmbedder();
+    const result = await embedder(texts, { pooling: 'mean', normalize: true });
+    const data = result.data as ArrayLike<number>;
+    const dimensions = DEFAULT_EMBEDDING_CONFIG.dimensions;
+    const embeddings: Float32Array[] = [];
+    for (let i = 0; i < texts.length; i++) {
+      const start = i * dimensions;
+      const end = start + dimensions;
+      embeddings.push(new Float32Array(Array.prototype.slice.call(data, start, end)));
+    }
+    return embeddings;
   });
-
-  // Result shape is [batch_size, dimensions]
-  // Need to split into individual vectors
-  const data = result.data as ArrayLike<number>;
-  const dimensions = DEFAULT_EMBEDDING_CONFIG.dimensions;
-  const embeddings: Float32Array[] = [];
-
-  for (let i = 0; i < texts.length; i++) {
-    const start = i * dimensions;
-    const end = start + dimensions;
-    embeddings.push(new Float32Array(Array.prototype.slice.call(data, start, end)));
-  }
-
-  return embeddings;
 };
 
 /**
