@@ -18,12 +18,10 @@ def get_projects_root():
     return os.getenv("PROJECTS_ROOT", "/projects")
 
 _startup_executor = ThreadPoolExecutor(max_workers=1)
-_analyze_semaphore: asyncio.Semaphore | None = None
+_analyze_semaphore: asyncio.Semaphore = asyncio.Semaphore(1)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _analyze_semaphore
-    _analyze_semaphore = asyncio.Semaphore(1)
     projects_root = get_projects_root()
     logger.info(f"Starting GitNexus MCP Proxy in Trust Mode with PROJECTS_ROOT={projects_root}")
 
@@ -34,7 +32,7 @@ async def lifespan(app: FastAPI):
             with open(repos_file, 'r') as f:
                 repos_list = json.load(f)
             logger.info(f"Auto-indexing {len(repos_list)} repos from repos.json on startup...")
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             for repo in repos_list:
                 full_name = repo.get("full_name")
                 clone_url = repo.get("clone_url")
@@ -132,9 +130,7 @@ async def gitea_webhook(
         # Pass clone_url and branch to background task to allow cloning and switching branches
         async def _guarded_analyze():
             async with _analyze_semaphore:
-                await asyncio.get_event_loop().run_in_executor(
-                    None, run_analyze, repo_path, clone_url, branch
-                )
+                await asyncio.to_thread(run_analyze, repo_path, clone_url, branch)
 
         background_tasks.add_task(_guarded_analyze)
         
