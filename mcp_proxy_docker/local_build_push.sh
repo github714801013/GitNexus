@@ -59,6 +59,8 @@ ssh -o StrictHostKeyChecking=no -R "${REGISTRY_PORT}:${REGISTRY_HOST}:${REGISTRY
         -v /home/ji99/gitnexus:/projects \
         --restart always \
         -e GITEA_TOKEN="401a8a2a8339719a3a313eece19bc1d312f3531b" \
+        -e GITNEXUS_EMBEDDING_MODEL="Alibaba-NLP/gte-Qwen2-1.5B-instruct" \
+        -e GITNEXUS_EMBEDDING_DIMS="1536" \
         -e GITNEXUS_USE_FLASH_ATTENTION="true" \
         "${full_image_name}"
 EOF

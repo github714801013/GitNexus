@@ -14,7 +14,7 @@ import {
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 // Model config
-const MODEL_ID = process.env.GITNEXUS_EMBEDDING_MODEL || 'Alibaba-NLP/gte-Qwen2-1.5B-instruct';
+const MODEL_ID = process.env.GITNEXUS_EMBEDDING_MODEL || 'Xenova/bge-small-zh-v1.5';
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
