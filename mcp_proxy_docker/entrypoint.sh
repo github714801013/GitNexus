@@ -14,6 +14,9 @@ export GITNEXUS_FTS_STEMMER="none"
 export GITNEXUS_REMOTE_DEPLOY="true"
 export GITNEXUS_EMBEDDING_DEVICE="cuda"
 
+# Ensure CUDA and cuDNN libraries are found
+export LD_LIBRARY_PATH="/usr/local/cuda-12/targets/x86_64-linux/lib:/usr/local/cuda-12/compat:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+
 # Change directory to the proxy app
 cd /app/mcp_proxy
 

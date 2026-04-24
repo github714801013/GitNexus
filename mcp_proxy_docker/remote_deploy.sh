@@ -34,6 +34,7 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
     
     echo "启动新容器 (映射 /home/ji99/gitnexus -> /projects)..."
     docker run -d --name "${IMAGE_NAME}" \
+        --gpus all \
         -p 1347:1347 -p 1348:1348 -p 1349:1349 -p 1350:1350 \
         -v /home/ji99/gitnexus:/projects \
         --restart always \
@@ -50,5 +51,5 @@ EOF
 echo "--- 步骤 5: 清理本地压缩包 ---"
 rm "$ARCHIVE_NAME"
 
-echo "远程部署完成，正在追踪索引进度日志 (按 Ctrl+C 退出追踪)..."
-ssh "${REMOTE_USER}@${REMOTE_HOST}" -t "docker logs -f ${IMAGE_NAME}"
+echo "远程部署完成，正在查看初始启动日志..."
+ssh "${REMOTE_USER}@${REMOTE_HOST}" -t "docker logs --tail 20 ${IMAGE_NAME}"

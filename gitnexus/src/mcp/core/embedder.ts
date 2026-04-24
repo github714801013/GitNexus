@@ -81,7 +81,8 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
           }
           console.error(`GitNexus: Embedding model loaded (${device})`);
           return embedderInstance!;
-        } catch {
+        } catch (err) {
+          console.error(`GitNexus: Failed to load embedding model on device "${device}":`, err instanceof Error ? err.message : String(err));
           if (device === 'cpu') throw new Error('Failed to load embedding model');
         }
       }
