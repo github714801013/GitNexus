@@ -15,12 +15,43 @@ if (!process.env.ORT_LOG_LEVEL) {
 }
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { execFileSync, spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
+
+/**
+ * Walk up from a resolved file path to find the root directory of a package
+ * (the directory containing package.json with the given name).
+ * Needed because some packages (transformers v4+, onnxruntime-node) don't
+ * export './package.json', so require.resolve('pkg/package.json') throws.
+ */
+function findPackageRoot(startFile: string, packageName: string): string {
+  let dir = dirname(startFile);
+  while (true) {
+    const pkgPath = join(dir, 'package.json');
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+        if (pkg.name === packageName) return dir;
+      } catch {}
+    }
+    const parent = dirname(dir);
+    if (parent === dir) throw new Error(`Cannot find package root for ${packageName}`);
+    dir = parent;
+  }
+}
+
+/** Resolve a package's root directory, handling packages that don't export ./package.json. */
+function resolvePackageDir(req: NodeRequire, packageName: string): string {
+  try {
+    return dirname(req.resolve(`${packageName}/package.json`));
+  } catch {
+    return findPackageRoot(req.resolve(packageName), packageName);
+  }
+}
 
 /**
  * Check whether the onnxruntime-node package that @huggingface/transformers
@@ -34,11 +65,9 @@ import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 function hasOrtCudaProvider(): boolean {
   try {
     const require = createRequire(import.meta.url);
-    // Resolve from @huggingface/transformers' scope so we find the same
-    // onnxruntime-node binary that transformers.js will use at runtime
-    const transformersDir = dirname(require.resolve('@huggingface/transformers/package.json'));
+    const transformersDir = resolvePackageDir(require, '@huggingface/transformers');
     const ortRequire = createRequire(join(transformersDir, 'package.json'));
-    const ortPath = dirname(ortRequire.resolve('onnxruntime-node/package.json'));
+    const ortPath = resolvePackageDir(ortRequire, 'onnxruntime-node');
     // ORT 1.24.x only ships CUDA binaries for linux/x64 (downloaded from NuGet
     // at postinstall). arm64 will correctly return false here until ORT adds support.
     const arch = process.arch;
@@ -59,9 +88,9 @@ function hasOrtCudaProvider(): boolean {
 function probeCudaProvider(): boolean {
   try {
     const require = createRequire(import.meta.url);
-    const transformersDir = dirname(require.resolve('@huggingface/transformers/package.json'));
+    const transformersDir = resolvePackageDir(require, '@huggingface/transformers');
     const ortRequire = createRequire(join(transformersDir, 'package.json'));
-    const ortPath = dirname(ortRequire.resolve('onnxruntime-node/package.json'));
+    const ortPath = resolvePackageDir(ortRequire, 'onnxruntime-node');
     const cudaLib = join(
       ortPath,
       'bin',
