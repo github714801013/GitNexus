@@ -6,6 +6,8 @@ ENV http_proxy=http://10.1.14.185:10808
 ENV https_proxy=http://10.1.14.185:10808
 ENV all_proxy=socks5://10.1.14.185:10808
 ENV no_proxy=localhost,127.0.0.1,10.1.14.177,10.1.14.185
+# global-agent (onnxruntime-node install.js 使用) 需要此变量才能走代理
+ENV GLOBAL_AGENT_HTTPS_PROXY=http://10.1.14.185:10808
 
 # 避免交互式提示
 ENV DEBIAN_FRONTEND=noninteractive
@@ -53,6 +55,7 @@ RUN npm install --registry=http://registry.npmmirror.com --no-audit --no-fund --
 WORKDIR /app/gitnexus
 RUN npm install --registry=http://registry.npmmirror.com --no-audit --no-fund --ignore-scripts && \
     npm rebuild @ladybugdb/core && \
+    node node_modules/onnxruntime-node/script/install && \
     npx tsc && \
     mkdir -p dist/_shared && \
     cp -r /app/gitnexus-shared/src/* dist/_shared/ && \
@@ -86,4 +89,4 @@ EXPOSE 1347 1348 1349 1350
 COPY ./mcp_proxy_docker/entrypoint.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]

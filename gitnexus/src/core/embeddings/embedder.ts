@@ -149,9 +149,11 @@ export const initEmbedder = async (
   // Probe for CUDA first — ONNX Runtime crashes (uncatchable native error)
   // if we attempt CUDA without the required shared libraries
   const isWindows = process.platform === 'win32';
+  // GITNEXUS_EMBEDDING_DEVICE overrides auto-detection entirely (same as mcp/core/embedder.ts)
+  const envDevice = process.env.GITNEXUS_EMBEDDING_DEVICE as 'dml' | 'cuda' | 'cpu' | 'wasm' | undefined;
   const gpuDevice = isWindows ? 'dml' : isCudaAvailable() ? 'cuda' : 'cpu';
   const requestedDevice =
-    forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
+    forceDevice || envDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
 
   initPromise = (async () => {
     try {

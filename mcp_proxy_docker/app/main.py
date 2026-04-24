@@ -1,10 +1,12 @@
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 import os
+import asyncio
 import logging
 import json
 import portalocker
 from typing import Optional
 from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 from .executor import run_analyze
 
 # Configure Logging
@@ -15,13 +17,35 @@ def get_projects_root():
     # 宿主机环境通过环境变量注入此路径
     return os.getenv("PROJECTS_ROOT", "/projects")
 
+_startup_executor = ThreadPoolExecutor(max_workers=2)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Log info
     projects_root = get_projects_root()
     logger.info(f"Starting GitNexus MCP Proxy in Trust Mode with PROJECTS_ROOT={projects_root}")
+
+    # 启动时读取 repos.json，对每个 repo 触发后台索引
+    repos_file = os.path.join(projects_root, "repos.json")
+    if os.path.exists(repos_file):
+        try:
+            with open(repos_file, 'r') as f:
+                repos_list = json.load(f)
+            logger.info(f"Auto-indexing {len(repos_list)} repos from repos.json on startup...")
+            loop = asyncio.get_event_loop()
+            for repo in repos_list:
+                full_name = repo.get("full_name")
+                clone_url = repo.get("clone_url")
+                branch = repo.get("branch")
+                if full_name:
+                    repo_path = os.path.join(projects_root, full_name)
+                    logger.info(f"Scheduling startup index: {full_name} -> {repo_path}")
+                    loop.run_in_executor(_startup_executor, run_analyze, repo_path, clone_url, branch)
+        except Exception as e:
+            logger.error(f"Failed to auto-index repos on startup: {e}")
+    else:
+        logger.info(f"No repos.json found at {repos_file}, skipping auto-index.")
+
     yield
-    # Shutdown: Log info
     logger.info("GitNexus MCP Proxy stopping.")
 
 app = FastAPI(title="GitNexus MCP Proxy Service (Webhook Optimized)", lifespan=lifespan)
