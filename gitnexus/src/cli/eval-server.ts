@@ -269,6 +269,7 @@ export function formatListReposResult(result: any): string {
       `  ${r.name} — ${stats.nodes || '?'} symbols, ${stats.edges || '?'} relationships, ${stats.processes || '?'} flows`,
     );
     lines.push(`    Path: ${r.path}`);
+    if (r.branch) lines.push(`    Branch: ${r.branch}`);
     lines.push(`    Indexed: ${r.indexedAt}`);
   }
   return lines.join('\n');

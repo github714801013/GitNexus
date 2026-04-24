@@ -200,6 +200,7 @@ interface RepoHandle {
   indexedAt: string;
   lastCommit: string;
   remoteUrl?: string;
+  branch?: string;
   stats?: RegistryEntry['stats'];
 }
 
@@ -516,6 +517,7 @@ export class LocalBackend {
       indexedAt: string;
       lastCommit: string;
       remoteUrl?: string;
+      branch?: string;
       stats?: any;
       staleness?: { commitsBehind: number; hint?: string };
       siblings?: Array<{ name: string; path: string; lastCommit: string }>;
@@ -551,6 +553,7 @@ export class LocalBackend {
         indexedAt: h.indexedAt,
         lastCommit: h.lastCommit,
         remoteUrl: h.remoteUrl,
+        branch: h.branch,
         stats: h.stats,
         staleness: stale.isStale
           ? { commitsBehind: stale.commitsBehind, hint: stale.hint }

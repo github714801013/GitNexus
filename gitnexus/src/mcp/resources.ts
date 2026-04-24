@@ -280,6 +280,7 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
   for (const repo of repos) {
     lines.push(`  - name: "${repo.name}"`);
     lines.push(`    path: "${repo.path}"`);
+    if (repo.branch) lines.push(`    branch: "${repo.branch}"`);
     lines.push(`    indexed: "${repo.indexedAt}"`);
     lines.push(`    commit: "${repo.lastCommit?.slice(0, 7) || 'unknown'}"`);
     if (repo.stats) {

@@ -30,7 +30,7 @@ import {
   registerRepo,
   cleanupOldKuzuFiles,
 } from '../storage/repo-manager.js';
-import { getCurrentCommit, getRemoteUrl, hasGitDir, getInferredRepoName } from '../storage/git.js';
+import { getCurrentCommit, getCurrentBranch, getRemoteUrl, hasGitDir, getInferredRepoName } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { EMBEDDING_TABLE_NAME, CREATE_VECTOR_INDEX_QUERY } from './lbug/schema.js';
@@ -321,6 +321,7 @@ export async function runFullAnalysis(
       repoPath,
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
+      branch: hasGitDir(repoPath) ? getCurrentBranch(repoPath) : undefined,
       // Captured here (not at registration) so it travels with the
       // on-disk meta.json — sibling-clone fingerprinting works for
       // out-of-tree consumers (group-status, future tooling) without

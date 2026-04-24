@@ -21,6 +21,14 @@ export const getCurrentCommit = (repoPath: string): string => {
   }
 };
 
+export const getCurrentBranch = (repoPath: string): string => {
+  try {
+    return execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoPath, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch {
+    return '';
+  }
+};
+
 /**
  * Get a stable canonical identifier for the repo's `origin` remote, if any.
  *
