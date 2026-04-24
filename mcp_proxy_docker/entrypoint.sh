@@ -42,6 +42,11 @@ serve -s /app/gitnexus-web/dist -l tcp://0.0.0.0:1350 &
 # Wait a bit for initialization
 sleep 2
 
+# Route analyze subprocess embedding calls through the serve process (port 1349).
+# This ensures only one CUDA session exists (in the serve process), preventing
+# concurrent GPU memory allocation from multiple analyze subprocesses.
+export GITNEXUS_EMBEDDING_URL="http://localhost:1349/v1"
+
 # 4. Start the mcp-proxy in the foreground (exposes gitnexus mcp as SSE)
 echo "Starting mcp-proxy (SSE) wrapping 'node /app/gitnexus/dist/gitnexus/src/cli/index.js mcp' on port 1348..."
 exec mcp-proxy --port 1348 --address 0.0.0.0 node /app/gitnexus/dist/gitnexus/src/cli/index.js mcp
