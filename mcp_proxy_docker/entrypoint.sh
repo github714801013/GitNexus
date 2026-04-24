@@ -17,8 +17,11 @@ export GITNEXUS_EMBEDDING_DEVICE="cuda"
 export GITNEXUS_HOME="/projects/.gitnexus"
 mkdir -p "$GITNEXUS_HOME"
 
-# Ensure CUDA and cuDNN libraries are found
-export LD_LIBRARY_PATH="/usr/local/cuda-12/targets/x86_64-linux/lib:/usr/local/cuda-12/compat:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+# Ensure CUDA and cuDNN libraries are found.
+# NOTE: /usr/local/cuda-12/compat is intentionally excluded — it contains
+# libcuda.so.560.35.05 which conflicts with the host driver (590+) mounted
+# by the NVIDIA container runtime, causing CUDA error 803 (driver mismatch).
+export LD_LIBRARY_PATH="/usr/local/cuda-12/targets/x86_64-linux/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
 
 # Change directory to the proxy app
 cd /app/mcp_proxy

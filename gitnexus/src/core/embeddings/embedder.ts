@@ -16,7 +16,7 @@ if (!process.env.ORT_LOG_LEVEL) {
 
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
 import { existsSync } from 'fs';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
@@ -51,16 +51,47 @@ function hasOrtCudaProvider(): boolean {
 }
 
 /**
+ * Probe whether the ORT CUDA provider can actually be loaded without crashing.
+ * Spawns a child process with LD_PRELOAD set to the provider .so — if the
+ * library's init code segfaults (exit 139 / signal SIGSEGV), returns false.
+ * This catches driver/runtime mismatches that only manifest at dlopen time.
+ */
+function probeCudaProvider(): boolean {
+  try {
+    const require = createRequire(import.meta.url);
+    const transformersDir = dirname(require.resolve('@huggingface/transformers/package.json'));
+    const ortRequire = createRequire(join(transformersDir, 'package.json'));
+    const ortPath = dirname(ortRequire.resolve('onnxruntime-node/package.json'));
+    const cudaLib = join(
+      ortPath,
+      'bin',
+      'napi-v6',
+      'linux',
+      process.arch,
+      'libonnxruntime_providers_cuda.so',
+    );
+    if (!existsSync(cudaLib)) return false;
+
+    const result = spawnSync(process.execPath, ['--eval', 'process.exit(0)'], {
+      timeout: 10000,
+      env: { ...process.env, LD_PRELOAD: cudaLib, ORT_LOG_LEVEL: '3' },
+    });
+    // Segfault = signal SIGSEGV or exit code 139
+    return result.status === 0 && result.signal === null;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Check whether CUDA libraries are actually available on this system.
  * ONNX Runtime's native layer crashes (uncatchable) if we attempt CUDA
  * without the required shared libraries, so we probe first.
  *
- * Checks both:
- * 1. That system CUDA libraries (libcublasLt) are present
- * 2. That onnxruntime-node ships the CUDA execution provider binary
- *
- * Both conditions must be true — system CUDA libs alone are not enough
- * if onnxruntime-node is a CPU-only build (versions < 1.24.0).
+ * Checks:
+ * 1. onnxruntime-node ships the CUDA execution provider binary
+ * 2. System CUDA libraries (libcublasLt) are present
+ * 3. The CUDA provider can actually be loaded without segfaulting
  */
 function isCudaAvailable(): boolean {
   // First, verify onnxruntime-node has the CUDA provider binary.
@@ -69,29 +100,40 @@ function isCudaAvailable(): boolean {
 
   // Primary: query the dynamic linker cache — covers all architectures,
   // distro layouts, and custom install paths registered with ldconfig
+  let hasCudaLibs = false;
   try {
     const out = execFileSync('ldconfig', ['-p'], { timeout: 3000, encoding: 'utf-8' });
-    if (out.includes('libcublasLt.so.12')) return true;
+    if (out.includes('libcublasLt.so.12')) hasCudaLibs = true;
   } catch {
     // ldconfig not available (e.g. non-standard container)
   }
 
-  // Fallback: check CUDA_PATH and LD_LIBRARY_PATH for environments where
-  // ldconfig doesn't know about the CUDA install (conda, manual /opt/cuda, etc.)
-  for (const envVar of ['CUDA_PATH', 'LD_LIBRARY_PATH']) {
-    const val = process.env[envVar];
-    if (!val) continue;
-    for (const dir of val.split(':').filter(Boolean)) {
-      if (
-        existsSync(join(dir, 'lib64', 'libcublasLt.so.12')) ||
-        existsSync(join(dir, 'lib', 'libcublasLt.so.12')) ||
-        existsSync(join(dir, 'libcublasLt.so.12'))
-      )
-        return true;
+  if (!hasCudaLibs) {
+    // Fallback: check CUDA_PATH and LD_LIBRARY_PATH for environments where
+    // ldconfig doesn't know about the CUDA install (conda, manual /opt/cuda, etc.)
+    for (const envVar of ['CUDA_PATH', 'LD_LIBRARY_PATH']) {
+      const val = process.env[envVar];
+      if (!val) continue;
+      for (const dir of val.split(':').filter(Boolean)) {
+        if (
+          existsSync(join(dir, 'lib64', 'libcublasLt.so.12')) ||
+          existsSync(join(dir, 'lib', 'libcublasLt.so.12')) ||
+          existsSync(join(dir, 'libcublasLt.so.12'))
+        ) {
+          hasCudaLibs = true;
+          break;
+        }
+      }
+      if (hasCudaLibs) break;
     }
   }
 
-  return false;
+  if (!hasCudaLibs) return false;
+
+  // Final gate: probe whether the CUDA provider can actually be loaded.
+  // Driver/runtime version mismatches (e.g. error 803) only surface at
+  // dlopen time — this catches them before they crash the main process.
+  return probeCudaProvider();
 }
 
 // Module-level state for singleton pattern

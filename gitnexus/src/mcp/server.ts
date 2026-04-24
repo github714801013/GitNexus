@@ -180,6 +180,24 @@ export function createMCPServer(backend: LocalBackend): Server {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
+
+      // "Multiple repositories indexed" is a disambiguation request, not a fatal
+      // error. Return as a normal (non-error) response so the LLM retries with
+      // the correct "repo" parameter instead of stopping on an error.
+      if (message.startsWith('Multiple repositories indexed.')) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `${message}\n\n` +
+                `**Action required:** Call \`list_repos\` to see full details, ` +
+                `then retry this tool with \`repo\` set to one of the names listed above.`,
+            },
+          ],
+        };
+      }
+
       return {
         content: [
           {
