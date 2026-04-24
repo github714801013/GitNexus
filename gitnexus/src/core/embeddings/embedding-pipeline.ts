@@ -16,6 +16,7 @@ import {
   embedText,
   embeddingToArray,
   isEmbedderReady,
+  getCurrentDevice,
 } from './embedder.js';
 import { generateEmbeddingText } from './text-generator.js';
 import { chunkNode, characterChunk } from './chunker.js';
@@ -445,7 +446,10 @@ export const runEmbeddingPipeline = async (
       }
 
       // Embed chunk texts in sub-batches to control memory
-      const EMBED_SUB_BATCH = 8;
+      // GPU benefits from larger batches (64+); CPU uses smaller batches to avoid OOM
+      const EMBED_SUB_BATCH = process.env.GITNEXUS_EMBEDDING_BATCH_SIZE
+        ? parseInt(process.env.GITNEXUS_EMBEDDING_BATCH_SIZE, 10)
+        : getCurrentDevice() === 'cuda' || getCurrentDevice() === 'dml' ? 64 : 8;
       for (let si = 0; si < allTexts.length; si += EMBED_SUB_BATCH) {
         const subTexts = allTexts.slice(si, si + EMBED_SUB_BATCH);
         const subUpdates = allUpdates.slice(si, si + EMBED_SUB_BATCH);
