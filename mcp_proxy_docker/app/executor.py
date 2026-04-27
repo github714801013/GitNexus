@@ -140,11 +140,12 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
             if os.getenv("GITNEXUS_EMBEDDING_DEVICE"):
                 env["GITNEXUS_EMBEDDING_DEVICE"] = os.getenv("GITNEXUS_EMBEDDING_DEVICE")
 
-            if os.getenv("GITNEXUS_EMBEDDING_URL"):
-                env["GITNEXUS_EMBEDDING_URL"] = os.getenv("GITNEXUS_EMBEDDING_URL")
-            
-            if os.getenv("GITNEXUS_EMBEDDING_API_KEY"):
-                env["GITNEXUS_EMBEDDING_API_KEY"] = os.getenv("GITNEXUS_EMBEDDING_API_KEY")
+            # Use dedicated indexing vLLM instance if provided, else fallback to main URL
+            index_url = os.getenv("GITNEXUS_INDEX_EMBEDDING_URL", os.getenv("GITNEXUS_EMBEDDING_URL"))
+            if index_url:
+                env["GITNEXUS_EMBEDDING_URL"] = index_url
+
+            if os.getenv("GITNEXUS_EMBEDDING_API_KEY"):                env["GITNEXUS_EMBEDDING_API_KEY"] = os.getenv("GITNEXUS_EMBEDDING_API_KEY")
             
             # Add --force to ensure registry is updated even if repo is "Already up to date"
             result = subprocess.run(

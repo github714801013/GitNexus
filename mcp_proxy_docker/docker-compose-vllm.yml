@@ -1,0 +1,52 @@
+services:
+  # 搜索服务：端口 8001，常驻，保证 IDE 侧代码级问答秒回 (20% VRAM)
+  vllm-search:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-search
+    volumes:
+      - ./models:/root/.cache/huggingface
+    ports:
+      - "8001:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      --model Alibaba-NLP/gte-Qwen2-1.5B-instruct
+      --dtype half
+      --gpu-memory-utilization 0.20
+      --max-model-len 8192
+      --max-num-seqs 16
+      --enforce-eager
+      --task embed
+      --port 8000
+    restart: always
+
+  # 索引服务：端口 8002，吞吐怪兽，专吃 Git Webhook 增量推送 (75% VRAM)
+  vllm-index:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-index
+    volumes:
+      - ./models:/root/.cache/huggingface
+    ports:
+      - "8002:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      --model Alibaba-NLP/gte-Qwen2-1.5B-instruct
+      --dtype half
+      --gpu-memory-utilization 0.75
+      --max-model-len 8192
+      --max-num-seqs 256
+      --enforce-eager
+      --task embed
+      --port 8000
+    restart: always

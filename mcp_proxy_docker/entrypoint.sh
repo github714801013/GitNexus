@@ -38,9 +38,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 1347 --log-level info &
 
 # 2. Start the GitNexus HTTP API (UI Backend) on port 1349
 echo "Starting GitNexus HTTP API (UI Backend) on port 1349..."
-# IMPORTANT: Unset GITNEXUS_EMBEDDING_URL for the serve process so it performs
-# local inference rather than calling its own /v1/embeddings endpoint recursively.
-GITNEXUS_EMBEDDING_URL="" node /app/gitnexus/dist/gitnexus/src/cli/index.js serve --port 1349 --host 0.0.0.0 &
+node /app/gitnexus/dist/gitnexus/src/cli/index.js serve --port 1349 --host 0.0.0.0 &
 
 # 3. Start the GitNexus Web UI on port 1350
 echo "Starting GitNexus Web UI on port 1350..."
