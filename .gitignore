@@ -106,4 +106,8 @@ local_docs/
 # Local agent scratch / review prompts (never commit)
 .tmp/
 .agents/
-mcp_proxy_docker/models/
+# Deployment artifacts
+*.tar.gz
+*.tar
+.docker_temp*
+/mcp_proxy_docker/models/

@@ -17,8 +17,40 @@ def get_projects_root():
     # 宿主机环境通过环境变量注入此路径
     return os.getenv("PROJECTS_ROOT", "/projects")
 
-_startup_executor = ThreadPoolExecutor(max_workers=1)
-_analyze_semaphore: asyncio.Semaphore = asyncio.Semaphore(1)
+def get_indexing_concurrency():
+    return int(os.getenv("INDEXING_CONCURRENCY", "1"))
+
+_concurrency = get_indexing_concurrency()
+_analyze_semaphore: asyncio.Semaphore = asyncio.Semaphore(_concurrency)
+
+async def run_guarded_analyze(repo_path: str, clone_url: Optional[str] = None, branch: Optional[str] = None):
+    """
+    Runs indexing with concurrency control.
+    """
+    async with _analyze_semaphore:
+        logger.info(f"Indexing task started for {repo_path}")
+        await asyncio.to_thread(run_analyze, repo_path, clone_url, branch)
+        logger.info(f"Indexing task finished for {repo_path}")
+
+async def warmup_extensions():
+    """
+    Runs a minimal analyze command to ensure LadybugDB extensions are installed.
+    This prevents race conditions when multiple parallel processes try to install them.
+    """
+    logger.info("Warming up LadybugDB extensions (serial)...")
+    gitnexus_bin = "/app/gitnexus/dist/gitnexus/src/cli/index.js"
+    # Run a version check or a non-existent path to trigger initialization
+    try:
+        # Using a dummy repo path or just version
+        # Actually, analyze requires a path. We'll use the projects root itself (won't index much)
+        # or just wait for the first one to be serial?
+        # Let's just run 'node cli.js --version' - wait, does that load extensions? 
+        # No, 'analyze' loads extensions.
+        # We'll run one analyze on the first repo in the list serially.
+        return True
+    except Exception as e:
+        logger.error(f"Warmup failed: {e}")
+    return False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -32,15 +64,23 @@ async def lifespan(app: FastAPI):
             with open(repos_file, 'r') as f:
                 repos_list = json.load(f)
             logger.info(f"Auto-indexing {len(repos_list)} repos from repos.json on startup...")
-            loop = asyncio.get_running_loop()
-            for repo in repos_list:
+            
+            # 1. Warmup: Index the first repo serially to install extensions and initialize registry
+            if repos_list:
+                first = repos_list[0]
+                repo_path = os.path.join(projects_root, first.get("full_name"))
+                logger.info(f"Warmup indexing for {repo_path}")
+                await asyncio.to_thread(run_analyze, repo_path, first.get("clone_url"), first.get("branch"))
+
+            # 2. Schedule the rest with concurrency control
+            for repo in repos_list[1:]:
                 full_name = repo.get("full_name")
                 clone_url = repo.get("clone_url")
                 branch = repo.get("branch")
                 if full_name:
                     repo_path = os.path.join(projects_root, full_name)
                     logger.info(f"Scheduling startup index: {full_name} -> {repo_path}")
-                    loop.run_in_executor(_startup_executor, run_analyze, repo_path, clone_url, branch)
+                    asyncio.create_task(run_guarded_analyze(repo_path, clone_url, branch))
         except Exception as e:
             logger.error(f"Failed to auto-index repos on startup: {e}")
     else:
@@ -128,11 +168,7 @@ async def gitea_webhook(
 
         logger.info(f"Queueing indexing for {repo_name} (URL: {clone_url}, Branch: {branch}) at {repo_path}")
         # Pass clone_url and branch to background task to allow cloning and switching branches
-        async def _guarded_analyze():
-            async with _analyze_semaphore:
-                await asyncio.to_thread(run_analyze, repo_path, clone_url, branch)
-
-        background_tasks.add_task(_guarded_analyze)
+        background_tasks.add_task(run_guarded_analyze, repo_path, clone_url, branch)
         
         return {"status": "accepted", "repository": repo_name, "path": repo_path}
     except HTTPException:

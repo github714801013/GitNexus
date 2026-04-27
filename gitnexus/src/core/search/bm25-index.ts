@@ -83,6 +83,8 @@ function registerPoolCloseListenerOnce(
   addPoolCloseListener((repoId) => invalidateEnsuredFTSForRepo(repoId));
 }
 
+const ensurePromises = new Map<string, Promise<void>>();
+
 async function ensureFTSIndexViaExecutor(
   executor: (cypher: string) => Promise<any[]>,
   repoId: string,
@@ -92,29 +94,42 @@ async function ensureFTSIndexViaExecutor(
 ): Promise<void> {
   const key = `${repoId}:${table}:${indexName}`;
   if (ensuredPoolFTS.has(key)) return;
-  const propList = properties.map((p) => `'${p}'`).join(', ');
-  try {
-    await executor(
-      `CALL CREATE_FTS_INDEX('${table}', '${indexName}', [${propList}], stemmer := 'none')`,
-    );
-    // Index was created successfully — safe to cache.
-    ensuredPoolFTS.add(key);
-  } catch (e: any) {
-    // 'already exists' is the happy path (index persists on disk between
-    // process invocations) — cache it. Anything else is treated as a
-    // transient failure: surface a one-time warning and leave the key
-    // unset so the NEXT query retries rather than silently using a
-    // cached failure (which previously disabled BM25 for the whole
-    // process for that repo).
-    const msg = String(e?.message ?? '');
-    if (msg.includes('already exists')) {
-      ensuredPoolFTS.add(key);
-    } else {
-      console.warn(
-        `[gitnexus] FTS index ensure failed for repo "${repoId}" table "${table}" ` +
-          `(index "${indexName}"): ${msg || e}. Will retry on next query.`,
+
+  const pending = ensurePromises.get(key);
+  if (pending) return pending;
+
+  const promise = (async () => {
+    const propList = properties.map((p) => `'${p}'`).join(', ');
+    try {
+      await executor(
+        `CALL CREATE_FTS_INDEX('${table}', '${indexName}', [${propList}], stemmer := 'none')`,
       );
+      // Index was created successfully — safe to cache.
+      ensuredPoolFTS.add(key);
+    } catch (e: any) {
+      // 'already exists' is the happy path (index persists on disk between
+      // process invocations) — cache it. Anything else is treated as a
+      // transient failure: surface a one-time warning and leave the key
+      // unset so the NEXT query retries rather than silently using a
+      // cached failure (which previously disabled BM25 for the whole
+      // process for that repo).
+      const msg = String(e?.message ?? '');
+      if (msg.includes('already exists')) {
+        ensuredPoolFTS.add(key);
+      } else {
+        console.warn(
+          `[gitnexus] FTS index ensure failed for repo "${repoId}" table "${table}" ` +
+            `(index "${indexName}"): ${msg || e}. Will retry on next query.`,
+        );
+      }
     }
+  })();
+
+  ensurePromises.set(key, promise);
+  try {
+    await promise;
+  } finally {
+    ensurePromises.delete(key);
   }
 }
 

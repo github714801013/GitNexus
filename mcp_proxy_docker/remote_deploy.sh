@@ -14,7 +14,7 @@ tar --exclude='node_modules' --exclude='.git' --exclude='.history' --exclude='mc
     gitnexus gitnexus-shared gitnexus-web mcp_proxy_docker
 
 echo "--- 步骤 2: 发送源码到远程服务器 ---"
-scp "$ARCHIVE_NAME" mcp_proxy_docker/auto_verify.py repos.json "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
+scp "$ARCHIVE_NAME" mcp_proxy_docker/auto_verify.py repos.json mcp_proxy_docker/docker-compose-vllm.yml "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
 
 echo "--- 步骤 3: 远程执行构建与部署 ---"
 ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
@@ -32,7 +32,10 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
     docker stop "${IMAGE_NAME}" 2>/dev/null || true
     docker rm "${IMAGE_NAME}" 2>/dev/null || true
     
-    echo "启动新容器 (映射 /home/ji99/gitnexus -> /projects)..."
+    echo "启动 vLLM 双实例搜索与索引引擎 (按需下载模型权重)..."
+    docker compose -f docker-compose-vllm.yml up -d
+    
+    echo "启动新容器 (代理服务 & 挂载模型目录)..."
     docker run -d --name "${IMAGE_NAME}" \
         --gpus all \
         -p 1347:1347 -p 1348:1348 -p 1349:1349 -p 1350:1350 \
@@ -41,11 +44,12 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
         -v "/home/ji99/.gitnexus:/root/.gitnexus" \
         --restart always \
         -e GITEA_TOKEN="401a8a2a8339719a3a313eece19bc1d312f3531b" \
-        -e GITNEXUS_EMBEDDING_BATCH_SIZE=32 \
-        -e GITNEXUS_EMBEDDING_MODEL="twright8/gte-Qwen2-1.5B-instruct-onnx-fp16" \
-        -e GITNEXUS_EMBEDDING_DIMS=1536 \
-        -e GITNEXUS_ALLOW_REMOTE_MODELS=true \
-        -e GITNEXUS_USE_FLASH_ATTENTION=true \
+        -e INDEXING_CONCURRENCY="3" \
+        -e GITNEXUS_EMBEDDING_URL="http://${REMOTE_HOST}:8001/v1" \
+        -e GITNEXUS_INDEX_EMBEDDING_URL="http://${REMOTE_HOST}:8002/v1" \
+        -e GITNEXUS_EMBEDDING_MODEL="Alibaba-NLP/gte-Qwen2-1.5B-instruct" \
+        -e GITNEXUS_EMBEDDING_DIMS="1536" \
+        -e GITNEXUS_ALLOW_REMOTE_MODELS="true" \
         "${IMAGE_NAME}:latest"
     
     echo "--- 步骤 4: 启动全自动验证程序 ---"

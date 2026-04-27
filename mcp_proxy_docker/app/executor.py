@@ -69,22 +69,15 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
                 logger.error(f"Error during cloning: {str(e)}")
                 return False
 
-    # 2. Proceed with Update and Analyze using a Global Lock and per-repo Lock
-    # Use a global lock to prevent concurrent GPU-heavy tasks
-    global_lock_file = os.path.join(os.getenv("PROJECTS_ROOT", "/projects"), ".gitnexus_global.lock")
+    # 2. Proceed with Update and Analyze using a per-repo Lock
+    # Use per-repo lock to prevent concurrent analysis of the same repository
     lock_file = os.path.join(repo_path, ".gitnexus_analyze.lock")
-    
-    try:
-        # First acquire global lock (wait up to 1 hour for others to finish)
-        with portalocker.Lock(global_lock_file, timeout=3600):
-            # Then acquire per-repo lock
-            with portalocker.Lock(lock_file, timeout=60):
-                # Mark directory as safe for git (to avoid dubious ownership issues in Docker)
-                subprocess.run(["git", "config", "--global", "--add", "safe.directory", repo_path], check=False)
 
+    try:
+        # Acquire per-repo lock
+        with portalocker.Lock(lock_file, timeout=60):
             # Ensure the latest code is pulled before indexing
-            logger.info(f"Updating latest changes for {repo_path}")
-            
+            logger.info(f"Updating latest changes for {repo_path}")            
             # Use authenticated URL for pull as well
             if git_url:
                 auth_url = get_authenticated_url(git_url)
@@ -147,9 +140,9 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
 
             if os.getenv("GITNEXUS_EMBEDDING_API_KEY"):                env["GITNEXUS_EMBEDDING_API_KEY"] = os.getenv("GITNEXUS_EMBEDDING_API_KEY")
             
-            # Add --force to ensure registry is updated even if repo is "Already up to date"
+            # Incremental indexing: gitnexus analyze handles updates automatically
             result = subprocess.run(
-                ["node", gitnexus_bin, "analyze", repo_path, "--embeddings", "--force"],
+                ["node", gitnexus_bin, "analyze", repo_path, "--embeddings"],
                 capture_output=True,
                 text=True,
                 check=False,

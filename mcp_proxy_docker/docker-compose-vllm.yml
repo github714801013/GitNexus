@@ -4,9 +4,11 @@ services:
     image: vllm/vllm-openai:latest
     container_name: vllm-search
     volumes:
-      - ./models:/root/.cache/huggingface
+      - ./models:/app/models
     ports:
       - "8001:8000"
+    environment:
+      - HF_ENDPOINT=https://hf-mirror.com
     deploy:
       resources:
         reservations:
@@ -15,13 +17,14 @@ services:
               count: 1
               capabilities: [gpu]
     command: >
-      --model Alibaba-NLP/gte-Qwen2-1.5B-instruct
+      --model /app/models/Alibaba-NLP/gte-Qwen2-1.5B-instruct
+      --served-model-name Alibaba-NLP/gte-Qwen2-1.5B-instruct
       --dtype half
       --gpu-memory-utilization 0.20
       --max-model-len 8192
       --max-num-seqs 16
       --enforce-eager
-      --task embed
+      --trust-remote-code
       --port 8000
     restart: always
 
@@ -30,9 +33,11 @@ services:
     image: vllm/vllm-openai:latest
     container_name: vllm-index
     volumes:
-      - ./models:/root/.cache/huggingface
+      - ./models:/app/models
     ports:
       - "8002:8000"
+    environment:
+      - HF_ENDPOINT=https://hf-mirror.com
     deploy:
       resources:
         reservations:
@@ -41,12 +46,13 @@ services:
               count: 1
               capabilities: [gpu]
     command: >
-      --model Alibaba-NLP/gte-Qwen2-1.5B-instruct
+      --model /app/models/Alibaba-NLP/gte-Qwen2-1.5B-instruct
+      --served-model-name Alibaba-NLP/gte-Qwen2-1.5B-instruct
       --dtype half
       --gpu-memory-utilization 0.75
       --max-model-len 8192
       --max-num-seqs 256
       --enforce-eager
-      --task embed
+      --trust-remote-code
       --port 8000
     restart: always

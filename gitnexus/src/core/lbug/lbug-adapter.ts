@@ -344,7 +344,11 @@ const doInitLbug = async (dbPath: string) => {
       }
     }
     if (!acquired) {
-      console.warn(`⚠️ Warning: Could not acquire process lock for ${dbPath}. Proceeding anyway...`);
+      throw new Error(
+        `Could not acquire process lock for ${dbPath} after 5 seconds. ` +
+          `Another process (gitnexus analyze or gitnexus serve) may be using it. ` +
+          `Please wait for other GitNexus processes to finish or check for stale lock files (${lockPath}).`,
+      );
     }
   } catch (e) {
     /* ignore lock errors */
@@ -1295,6 +1299,8 @@ export const createFTSIndex = async (
   }
 };
 
+const ensureCoreFTSPromises = new Map<string, Promise<void>>();
+
 /**
  * Lazy-create an FTS index, caching the fact in-process.
  *
@@ -1314,8 +1320,21 @@ export const ensureFTSIndex = async (
 ): Promise<void> => {
   const key = `${tableName}:${indexName}`;
   if (ensuredFTSIndexes.has(key)) return;
-  await createFTSIndex(tableName, indexName, properties, stemmer);
-  ensuredFTSIndexes.add(key);
+
+  const pending = ensureCoreFTSPromises.get(key);
+  if (pending) return pending;
+
+  const promise = (async () => {
+    await createFTSIndex(tableName, indexName, properties, stemmer);
+    ensuredFTSIndexes.add(key);
+  })();
+
+  ensureCoreFTSPromises.set(key, promise);
+  try {
+    await promise;
+  } finally {
+    ensureCoreFTSPromises.delete(key);
+  }
 };
 
 /**

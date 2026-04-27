@@ -151,15 +151,22 @@ const httpEmbedBatch = async (
     throw new Error(`Embedding endpoint returned ${status} (${safeUrl(url)}, batch ${batchIndex})`);
   }
 
-  let data: { data: EmbeddingItem[] };
+  let data: { data: EmbeddingItem[] } | null = null;
   const text = await resp.text();
   try {
     data = JSON.parse(text);
   } catch (err) {
     throw new Error(
-      `Embedding API returned invalid JSON. Expected embeddings but got: ${text.slice(0, 200).replace(/\n/g, '\\n')}`,
+      `Embedding API returned invalid JSON. Expected embeddings but got: ${text.slice(0, 500).replace(/\n/g, '\\n')}`,
     );
   }
+
+  if (!data || !data.data) {
+    throw new Error(
+      `Embedding API returned success status but missing data property. Raw response: ${text.slice(0, 500).replace(/\n/g, '\\n')}`,
+    );
+  }
+
   return data.data;
 };
 
