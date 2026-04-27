@@ -139,6 +139,7 @@ export async function runFullAnalysis(
     callbacks.onProgress(phase, percent, message);
 
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
+  const lbugShadowPath = `${lbugPath}.shadow`;
 
   // Clean up stale KuzuDB files from before the LadybugDB migration.
   const kuzuResult = await cleanupOldKuzuFiles(storagePath);
@@ -192,11 +193,12 @@ export async function runFullAnalysis(
   });
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
-  progress('lbug', 60, 'Loading into LadybugDB...');
+  progress('lbug', 60, 'Loading into LadybugDB (Shadow Build)...');
 
   await closeLbug();
-  const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
-  for (const f of lbugFiles) {
+  // Clear any existing shadow files
+  const shadowFiles = [lbugShadowPath, `${lbugShadowPath}.wal`, `${lbugShadowPath}.lock` ];
+  for (const f of shadowFiles) {
     try {
       await fs.rm(f, { recursive: true, force: true });
     } catch {
@@ -204,7 +206,8 @@ export async function runFullAnalysis(
     }
   }
 
-  await initLbug(lbugPath);
+  // BUILD IN SHADOW
+  await initLbug(lbugShadowPath);
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
@@ -216,6 +219,7 @@ export async function runFullAnalysis(
       const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
       progress('lbug', pct, msg);
     });
+
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
     // FTS indexes are created lazily on first `query`/`context` call instead
@@ -391,6 +395,41 @@ export async function runFullAnalysis(
 
     // ── Close LadybugDB ──────────────────────────────────────────────
     await closeLbug();
+
+    // ── Phase 4: Atomic Swap ──────────────────────────────────────────
+    progress('lbug', 98, 'Finalizing index (Atomic Swap)...');
+
+    const liveFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock` ];
+    const shadowFiles = [lbugShadowPath, `${lbugShadowPath}.wal` ];
+
+    // 1. Remove old live files
+    for (const f of liveFiles) {
+      try {
+        await fs.rm(f, { force: true, recursive: true });
+      } catch {
+        /* swallow */
+      }
+    }
+
+    // 2. Move shadow to live
+    if (
+      await fs
+        .stat(lbugShadowPath)
+        .then(() => true)
+        .catch(() => false)
+    ) {
+      await fs.rename(lbugShadowPath, lbugPath);
+    }
+    if (
+      await fs
+        .stat(`${lbugShadowPath}.wal`)
+        .then(() => true)
+        .catch(() => false)
+    ) {
+      await fs.rename(`${lbugShadowPath}.wal`, `${lbugPath}.wal`);
+    }
+
+    log(`[analyze] Successfully swapped shadow index to live for ${projectName}`);
 
     progress('done', 100, 'Done');
 
