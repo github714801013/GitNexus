@@ -355,8 +355,44 @@ const doInitLbug = async (dbPath: string) => {
   }
 
   try {
-    db = new lbug.Database(dbPath);
-    conn = new lbug.Connection(db);
+    try {
+      db = new lbug.Database(dbPath);
+      conn = new lbug.Connection(db);
+    } catch (e: any) {
+      const msg = String(e.message || e).toLowerCase();
+      const isCorruption =
+        msg.includes('corrupt') ||
+        msg.includes('checksum') ||
+        msg.includes('invalid wal') ||
+        msg.includes('unreachable');
+
+      if (isCorruption) {
+        console.warn(`[lbug] Database corruption detected for ${dbPath}. Attempting auto-repair...`);
+        // Cleanup handles
+        try {
+          if (conn) await conn.close();
+        } catch {}
+        try {
+          if (db) await db.close();
+        } catch {}
+        conn = null;
+        db = null;
+
+        // Purge files
+        const filesToPurge = [dbPath, `${dbPath}.wal`, `${dbPath}.lock`, `${dbPath}.tmp` ];
+        for (const f of filesToPurge) {
+          try {
+            await fs.rm(f, { force: true, recursive: true });
+          } catch {}
+        }
+
+        // Retry once
+        db = new lbug.Database(dbPath);
+        conn = new lbug.Connection(db);
+      } else {
+        throw e;
+      }
+    }
 
     // Check for embedding dimension mismatch before running schema queries
     // If GITNEXUS_EMBEDDING_DIMS changed, we must drop the existing table.
