@@ -264,7 +264,17 @@ const fetchWithTimeout = async (
 };
 
 const assertOk = async (response: Response): Promise<void> => {
-  if (response.ok) return;
+  if (response.ok) {
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('text/html')) {
+      throw new BackendError(
+        'Expected JSON from API but received HTML. The backend URL might be incorrect or unreachable.',
+        response.status,
+        'server',
+      );
+    }
+    return;
+  }
 
   let message = response.statusText;
   try {

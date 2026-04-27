@@ -219,7 +219,13 @@ export async function callLLM(
       }
 
       // Non-streaming path
-      const json = (await response.json()) as any;
+      let json: any;
+      const text = await response.text();
+      try {
+        json = JSON.parse(text);
+      } catch (e) {
+        throw new Error(`LLM API returned invalid JSON. Expected response but got: ${text.slice(0, 200).replace(/\n/g, '\\n')}`);
+      }
       const choice = json.choices?.[0];
       if (!choice?.message?.content) {
         throw new Error('LLM returned empty response');

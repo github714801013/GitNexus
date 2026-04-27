@@ -1,5 +1,5 @@
-# 使用 NVIDIA CUDA 12 Runtime 作为基底
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+# 使用 Ubuntu 24.04 作为基底 (CPU 模式)
+FROM ubuntu:24.04
 
 # 配置代理 (加速构建)
 ENV http_proxy=http://10.1.14.185:10808

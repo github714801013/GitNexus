@@ -93,6 +93,12 @@ const httpEmbedBatch = async (
   attempt = 0,
 ): Promise<EmbeddingItem[]> => {
   let resp: Response;
+  const body = {
+    input: batch,
+    model,
+    encoding_format: 'float',
+  };
+
   try {
     resp = await fetch(url, {
       method: 'POST',
@@ -101,18 +107,16 @@ const httpEmbedBatch = async (
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ input: batch, model }),
+      body: JSON.stringify(body),
     });
   } catch (err) {
-    // Timeouts should not be retried — the server is unresponsive.
-    // AbortSignal.timeout() throws DOMException with name 'TimeoutError'.
+    // ... (rest of error handling remains same)
     const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
     if (isTimeout) {
       throw new Error(
         `Embedding request timed out after ${HTTP_TIMEOUT_MS}ms (${safeUrl(url)}, batch ${batchIndex})`,
       );
     }
-    // DNS, connection errors — retry with backoff
     if (attempt < HTTP_MAX_RETRIES) {
       const delay = HTTP_RETRY_BACKOFF_MS * (attempt + 1);
       await new Promise((r) => setTimeout(r, delay));
@@ -124,6 +128,21 @@ const httpEmbedBatch = async (
 
   if (!resp.ok) {
     const status = resp.status;
+    let errorDetail = '';
+    try {
+      errorDetail = await resp.text();
+    } catch {
+      // ignore
+    }
+
+    console.error(`❌ HTTP Embedding 400 Debug Info:`);
+    console.error(`URL: ${url}`);
+    console.error(`Status: ${status}`);
+    console.error(`Batch Size: ${batch.length}`);
+    console.error(`Total Chars: ${batch.reduce((sum, s) => sum + s.length, 0)}`);
+    console.error(`First 100 chars of first text: "${batch[0]?.substring(0, 100).replace(/\n/g, '\\n')}"`);
+    console.error(`Error Response Body: ${errorDetail}`);
+
     if ((status === 429 || status >= 500) && attempt < HTTP_MAX_RETRIES) {
       const delay = HTTP_RETRY_BACKOFF_MS * (attempt + 1);
       await new Promise((r) => setTimeout(r, delay));
@@ -132,7 +151,15 @@ const httpEmbedBatch = async (
     throw new Error(`Embedding endpoint returned ${status} (${safeUrl(url)}, batch ${batchIndex})`);
   }
 
-  const data = (await resp.json()) as { data: EmbeddingItem[] };
+  let data: { data: EmbeddingItem[] };
+  const text = await resp.text();
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    throw new Error(
+      `Embedding API returned invalid JSON. Expected embeddings but got: ${text.slice(0, 200).replace(/\n/g, '\\n')}`,
+    );
+  }
   return data.data;
 };
 

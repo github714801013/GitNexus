@@ -249,7 +249,13 @@ export const initEmbedder = async (
     try {
       // Configure transformers.js environment
       env.allowLocalModels = true; // MUST be true if allowRemoteModels is false to satisfy transformers.js validation
-      env.allowRemoteModels = false; // Prevent ETag checks that crash offline analysis if cached
+      env.allowRemoteModels = process.env.GITNEXUS_ALLOW_REMOTE_MODELS === 'true'; // Allow remote download if explicitly enabled (e.g. for large models not yet cached)
+
+      if (process.env.HF_ENDPOINT) {
+        // transformers.js v3/v4 uses HF_ENDPOINT environment variable if available,
+        // but explicitly setting it in the env object ensures it's used.
+        (env as any).remoteHost = process.env.HF_ENDPOINT;
+      }
 
       // Default cache to user-writable location. transformers.js defaults to
       // ./node_modules/.cache inside its own install dir, which is unwritable

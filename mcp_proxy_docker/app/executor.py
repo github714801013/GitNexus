@@ -95,40 +95,23 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
                     check=False
                 )
 
-            if branch:
-                logger.info(f"Switching to branch {branch} and updating")
-                subprocess.run(
-                    ["git", "remote", "set-branches", "origin", branch],
-                    cwd=repo_path,
-                    capture_output=True,
-                    check=False
-                )
-                subprocess.run(
-                    ["git", "fetch", "--depth", "1", "origin", branch],
-                    cwd=repo_path,
-                    capture_output=True,
-                    check=False
-                )
-                subprocess.run(
-                    ["git", "checkout", "-f", branch],
-                    cwd=repo_path,
-                    capture_output=True,
-                    check=False
-                )
-                subprocess.run(
-                    ["git", "reset", "--hard", f"origin/{branch}"],
-                    cwd=repo_path,
-                    capture_output=True,
-                    check=False
-                )
-            else:
-                subprocess.run(
-                    ["git", "pull"],
-                    cwd=repo_path,
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
+            # Force fetch and overwrite local code to ensure consistency
+            subprocess.run(["git", "fetch", "origin", "--depth", "1"], cwd=repo_path, capture_output=True, check=False)
+            
+            if not branch:
+                # Try to detect default branch if not provided
+                res = subprocess.run(["git", "remote", "show", "origin"], cwd=repo_path, capture_output=True, text=True, check=False)
+                for line in res.stdout.splitlines():
+                    if "HEAD branch" in line:
+                        branch = line.split(":")[-1].strip()
+                        break
+                if not branch:
+                    branch = "main" # Final fallback
+
+            logger.info(f"Forcing remote overwrite to origin/{branch}")
+            subprocess.run(["git", "checkout", "-f", branch], cwd=repo_path, capture_output=True, check=False)
+            subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=repo_path, capture_output=True, check=False)
+            subprocess.run(["git", "clean", "-fd"], cwd=repo_path, capture_output=True, check=False)
 
             logger.info(f"Starting gitnexus analyze for {repo_path}")
             # Use absolute path to gitnexus binary inside container
@@ -144,19 +127,24 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
             # Use HF mirror to bypass proxy timeout issues for transformers.js
             env["HF_ENDPOINT"] = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
             
-            # Explicitly set embedding model for Chinese support (gte-Qwen2-1.5B-instruct)
-            env["GITNEXUS_EMBEDDING_MODEL"] = os.getenv("GITNEXUS_EMBEDDING_MODEL", "Alibaba-NLP/gte-Qwen2-1.5B-instruct")
+            # Explicitly set embedding model for Chinese support (gte-Qwen2-1.5B-instruct ONNX)
+            env["GITNEXUS_EMBEDDING_MODEL"] = os.getenv("GITNEXUS_EMBEDDING_MODEL", "twright8/gte-Qwen2-1.5B-instruct-onnx-fp16")
             env["GITNEXUS_EMBEDDING_DIMS"] = os.getenv("GITNEXUS_EMBEDDING_DIMS", "1536")
             env["GITNEXUS_USE_FLASH_ATTENTION"] = os.getenv("GITNEXUS_USE_FLASH_ATTENTION", "true")
             env["GITNEXUS_FTS_STEMMER"] = os.getenv("GITNEXUS_FTS_STEMMER", "none")
             env["GITNEXUS_EMBEDDING_LIMIT"] = os.getenv("GITNEXUS_EMBEDDING_LIMIT", "500000")
             env["GITNEXUS_REMOTE_DEPLOY"] = os.getenv("GITNEXUS_REMOTE_DEPLOY", "true")
+            env["GITNEXUS_EMBEDDING_BATCH_SIZE"] = os.getenv("GITNEXUS_EMBEDDING_BATCH_SIZE", "32")
+            env["GITNEXUS_ALLOW_REMOTE_MODELS"] = os.getenv("GITNEXUS_ALLOW_REMOTE_MODELS", "false")
             
             if os.getenv("GITNEXUS_EMBEDDING_DEVICE"):
                 env["GITNEXUS_EMBEDDING_DEVICE"] = os.getenv("GITNEXUS_EMBEDDING_DEVICE")
 
             if os.getenv("GITNEXUS_EMBEDDING_URL"):
                 env["GITNEXUS_EMBEDDING_URL"] = os.getenv("GITNEXUS_EMBEDDING_URL")
+            
+            if os.getenv("GITNEXUS_EMBEDDING_API_KEY"):
+                env["GITNEXUS_EMBEDDING_API_KEY"] = os.getenv("GITNEXUS_EMBEDDING_API_KEY")
             
             # Add --force to ensure registry is updated even if repo is "Already up to date"
             result = subprocess.run(

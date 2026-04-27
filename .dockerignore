@@ -1,22 +1,13 @@
 .git
-<<<<<<< HEAD
-node_modules
-gitnexus/node_modules
-gitnexus-web/node_modules
-mcp_proxy_docker/venv
-__pycache__
-*.pyc
-.planning
-.cursor
-.windsurf
-eval/
-.sisyphus/
-=======
 .gitignore
 .DS_Store
 
 node_modules
 **/node_modules
+mcp_proxy_docker/venv
+mcp_proxy_docker/models
+__pycache__
+*.pyc
 
 dist
 **/dist
@@ -32,4 +23,8 @@ coverage
 .gitnexus
 gitnexus-web/playwright-report
 gitnexus-web/test-results
->>>>>>> 962f22482b3f85e2dc9712ff78e7ca92d2e23000
+.planning
+.cursor
+.windsurf
+eval/
+.sisyphus/

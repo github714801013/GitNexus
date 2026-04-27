@@ -317,26 +317,89 @@ const doInitLbug = async (dbPath: string) => {
   const parentDir = path.dirname(dbPath);
   await fs.mkdir(parentDir, { recursive: true });
 
-  db = new lbug.Database(dbPath);
-  conn = new lbug.Connection(db);
-
-  for (const schemaQuery of SCHEMA_QUERIES) {
-    try {
-      await conn.query(schemaQuery);
-    } catch (err) {
-      // Only ignore "already exists" errors - log everything else
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes('already exists')) {
-        console.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
+  // Cross-process file lock to prevent concurrent access by 'serve' and 'analyze'
+  // Kuzu/LadybugDB is sensitive to multi-process writes.
+  const lockPath = dbPath + '.process.lock';
+  let lockFd: any;
+  try {
+    // Try to acquire lock - wait up to 5 seconds
+    let acquired = false;
+    for (let i = 0; i < 50; i++) {
+      try {
+        // 'wx' flag: fail if path exists
+        lockFd = await fs.open(lockPath, 'wx');
+        acquired = true;
+        break;
+      } catch (e: any) {
+        if (e.code !== 'EEXIST') throw e;
+        // Check if lock is stale (older than 1 minute)
+        try {
+          const stats = await fs.stat(lockPath);
+          if (Date.now() - stats.mtimeMs > 60000) {
+            await fs.unlink(lockPath);
+            continue; // retry
+          }
+        } catch { /* ignore */ }
+        await new Promise((r) => setTimeout(r, 100));
       }
     }
+    if (!acquired) {
+      console.warn(`⚠️ Warning: Could not acquire process lock for ${dbPath}. Proceeding anyway...`);
+    }
+  } catch (e) {
+    /* ignore lock errors */
   }
 
-  // Load VECTOR extension for semantic search support
-  await loadVectorExtension();
+  try {
+    db = new lbug.Database(dbPath);
+    conn = new lbug.Connection(db);
 
-  currentDbPath = dbPath;
-  return { db, conn };
+    // Check for embedding dimension mismatch before running schema queries
+    // If GITNEXUS_EMBEDDING_DIMS changed, we must drop the existing table.
+    const expectedDims = parseInt(process.env.GITNEXUS_EMBEDDING_DIMS ?? '512', 10);
+    try {
+      const tableInfo = await conn.query(`CALL TABLE_INFO('${EMBEDDING_TABLE_NAME}')`);
+      const infoResult = Array.isArray(tableInfo) ? tableInfo[0] : tableInfo;
+      const rows = await infoResult.getAll();
+      const embeddingCol = rows.find((r: any) => (r.name || r[1]) === 'embedding');
+      if (embeddingCol) {
+        const typeStr = String(embeddingCol.type || embeddingCol[2]); // e.g. "FLOAT[512]"
+        const match = typeStr.match(/\[(\d+)\]/);
+        if (match && parseInt(match[1], 10) !== expectedDims) {
+          console.log(`[lbug] Embedding dimension mismatch (found ${match[1]}, expected ${expectedDims}). Dropping table...`);
+          await conn.query(`DROP TABLE ${EMBEDDING_TABLE_NAME}`);
+        }
+      }
+    } catch {
+      /* table doesn't exist, ignore */
+    }
+
+    for (const schemaQuery of SCHEMA_QUERIES) {
+      try {
+        await conn.query(schemaQuery);
+      } catch (err) {
+        // Only ignore "already exists" errors - log everything else
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('already exists')) {
+          console.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
+        }
+      }
+    }
+
+    // Load VECTOR extension for semantic search support
+    await loadVectorExtension();
+
+    currentDbPath = dbPath;
+    return { db, conn };
+  } finally {
+    // Release the process lock
+    if (lockFd) {
+      try {
+        await lockFd.close();
+        await fs.unlink(lockPath);
+      } catch { /* best effort */ }
+    }
+  }
 };
 
 export type LbugProgressCallback = (message: string) => void;

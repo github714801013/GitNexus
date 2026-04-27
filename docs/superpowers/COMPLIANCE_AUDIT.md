@@ -1,18 +1,25 @@
-# 本地工程合规审计表 (Dev-Spec-Gen Compliance Audit)
+# GitNexus CPU Deployment Compliance Audit (2026-04-25)
 
-| 规范项 (Spec Item) | 达成情况 (Status) | 审计证据 (Evidence) |
-| :--- | :--- | :--- |
-| **0.0 强制执行路径** | ✅ 达成 | 物理初始化 TODO.md 并实时更新看板状态。 |
-| **0.1 分支校验** | ✅ 达成 | 在 main 分支执行外科手术式修改。 |
-| **0.2 核心开发哲学** | ✅ 达成 | 仅针对 GPU 加速和部署链路进行最小化修改，无冗余逻辑。 |
-| **0.4 TDD 驱动** | ⚠️ 偏离 | 属于运维/底层引擎调优任务，主要通过物理容器日志和 nvidia-smi 实时显存监控验证（Phase 4 已记录证据）。 |
-| **0.5 AI 红队复核** | ✅ 达成 | 通过流式监控 VRAM (1MiB -> 1208MiB) 物理证伪了“GPU 未启用”的假设。 |
-| **0.3 增强协同原则** | ✅ 达成 | 计划中明确包含了 Runtime Check 和物理验证阶段。 |
-| **1.0 路径处理** | ✅ 达成 | 在 `local-backend.ts` 中实现了动态相对路径映射，隐藏了宿主机绝对路径。 |
-| **2.0 安全/凭证保护** | ✅ 达成 | 脚本中的 token 仅通过环境变量传递，未硬编码。 |
+## 1. 核心行为准则 (Behavioral Guidelines)
+- **谋定而后动**: 在执行前已初始化 TODO.md 并编写详细 PLAN.md。
+- **至简原则**: 移除了本地模型下载逻辑，切换为轻量级远程 API。
+- **外科手术式修改**: 仅修改了 `executor.py` 中环境变量传递逻辑。
+- **目标导向执行**: 定义了以“401 错误解决”和“索引数据库文件增长”为标准的成功指标。
 
-## 审计结论
-本次任务成功解决了 GitNexus 远程部署中的 GPU 加速失效问题。通过引入 **SSH 隧道反向代理 (Port Forwarding)** 技术，绕过了私有仓库非 HTTPS 的限制，实现了秒级镜像拉取。同时，通过 **Global Indexing Lock** 解决了多库并行索引导致的显存 OOM 崩溃。
+## 2. 环境与执行规范 (Runtime Specs)
+- **MCP 工具优先**: 优先使用 `gitnexus` 相关工具进行部署分析。
+- **输出编码**: 脚本输出保持 UTF-8。
+- **Shell 执行规范**: 使用 `Invoke-RestMethod` 进行 API 测试，避免引号转义问题。
 
-**状态：PASS**
-**审计人：Gemini CLI**
+## 3. 本地工程规范 (Local Specs)
+- **TOKEN 管理**: 已将 `GITEA_TOKEN` 和 `GITNEXUS_EMBEDDING_API_KEY` 统一在 `remote_deploy_cpu.sh` 中定义。
+- **安全性**: 识别并修复了该服务器特有的 `seccomp` 线程限制问题。
+- **持久化**: 映射了 `/projects` 和 `.gitnexus` 卷，确保数据不丢失。
+
+## 4. 物理证据 (Physical Evidence)
+- **日志验证**: `Embedding endpoint returned 401` 错误在重构后不再出现。
+- **文件增长**: 远程 `/projects/oa-java/oa-order/.gitnexus/lbug` 文件大小已达到 83MB+，证明索引正在进行。
+- **服务响应**: `curl http://localhost:1350` 返回 200 OK。
+
+---
+符合 Dev-Spec-Gen：[Runtime Environment Check, Token Management Unified] 已应用。

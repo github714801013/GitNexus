@@ -30,8 +30,17 @@ echo "=== 步骤 3: 推送镜像到私有仓库 ==="
 docker push "${full_image_name}"
 
 echo ""
-echo "=== 步骤 4: 上传配置文件到远端 ==="
+echo "=== 步骤 4: 上传配置文件和模型到远端 ==="
+# 仅上传 models 目录中不存在的文件 (增量上传)
+ssh "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p ${REMOTE_PATH}/models"
 scp mcp_proxy_docker/auto_verify.py repos.json "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
+echo "正在上传模型文件 (可能较大，请稍候)..."
+# 使用 rsync 增量同步模型 (如果可用)，否则回退到 scp
+if command -v rsync >/dev/null 2>&1; then
+    rsync -avz --progress mcp_proxy_docker/models/ "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/models/"
+else
+    scp -r mcp_proxy_docker/models/* "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/models/"
+fi
 
 echo ""
 echo "=== 步骤 5: 通过 SSH 隧道远端拉取并启动 ==="
@@ -52,11 +61,12 @@ ssh -o StrictHostKeyChecking=no -R "${REGISTRY_PORT}:${REGISTRY_HOST}:${REGISTRY
     docker stop "${IMAGE_NAME}" 2>/dev/null || true
     docker rm "${IMAGE_NAME}" 2>/dev/null || true
 
-    echo "启动新容器 (启用 GPU 加速)..."
+    echo "启动新容器 (启用 GPU 加速 & 挂载模型目录)..."
     docker run -d --name "${IMAGE_NAME}" \
         --gpus all \
         -p 1347:1347 -p 1348:1348 -p 1349:1349 -p 1350:1350 \
         -v /home/ji99/gitnexus:/projects \
+        -v "${REMOTE_PATH}/models:/app/models" \
         --restart always \
         -e GITEA_TOKEN="401a8a2a8339719a3a313eece19bc1d312f3531b" \
         -e GITNEXUS_EMBEDDING_MODEL="Alibaba-NLP/gte-Qwen2-1.5B-instruct" \
