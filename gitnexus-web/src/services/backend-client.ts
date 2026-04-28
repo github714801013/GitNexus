@@ -206,7 +206,10 @@ export const getBackendUrl = (): string => _backendUrl;
  * (since all API methods append their own /api/... paths to _backendUrl).
  */
 export function normalizeServerUrl(input: string): string {
+  if (!input || !input.trim()) return '';
+
   let url = input.trim().replace(/\/+$/, '');
+  if (!url) return '';
 
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
     if (url.startsWith('localhost') || url.startsWith('127.0.0.1')) {

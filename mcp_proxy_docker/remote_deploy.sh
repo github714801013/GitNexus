@@ -24,7 +24,7 @@ version=$(git rev-parse --short HEAD 2>/dev/null || echo "latest")
 full_image_tag="${REGISTRY_URL}/${IMAGE_NAME}:${version}"
 
 export DOCKER_BUILDKIT=1
-docker build -t "${full_image_tag}" -f mcp_proxy_docker/Dockerfile .
+docker build -t "${full_image_tag}" -f mcp_proxy_docker/Dockerfile --build-arg VITE_BACKEND_URL=/ .
 
 # 同时也打一个 latest 标签
 docker tag "${full_image_tag}" "${IMAGE_NAME}:latest"

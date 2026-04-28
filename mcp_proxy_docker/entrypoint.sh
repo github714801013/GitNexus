@@ -15,7 +15,7 @@ export GITNEXUS_REMOTE_DEPLOY="${GITNEXUS_REMOTE_DEPLOY:-true}"
 export GITNEXUS_EMBEDDING_DEVICE="${GITNEXUS_EMBEDDING_DEVICE:-cuda}"
 export GITNEXUS_EMBEDDING_BATCH_SIZE="${GITNEXUS_EMBEDDING_BATCH_SIZE:-16}"
 # 持久化 registry 到挂载卷，避免容器重启后丢失索引注册信息
-export GITNEXUS_HOME="${GITNEXUS_HOME:-/projects/.gitnexus}"
+export GITNEXUS_HOME="${GITNEXUS_HOME:-/root/.gitnexus}"
 mkdir -p "$GITNEXUS_HOME"
 
 # Ensure CUDA and cuDNN libraries are found.
