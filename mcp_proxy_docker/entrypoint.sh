@@ -41,9 +41,9 @@ echo "Starting GitNexus HTTP API (UI Backend) on port 1349..."
 node /app/gitnexus/dist/gitnexus/src/cli/index.js serve --port 1349 --host 0.0.0.0 &
 
 # 3. Start the GitNexus Web UI on port 1350
-echo "Starting GitNexus Web UI on port 1350..."
-# Vite build output is usually in 'dist'
-serve -s /app/gitnexus-web/dist -l tcp://0.0.0.0:1350 &
+echo "Starting GitNexus Web UI on port 1350 (via proxy)..."
+# Use a custom proxy script to route /api to the backend and serve static files for others
+node /app/mcp_proxy/proxy.js &
 
 # Wait a bit for initialization
 sleep 2

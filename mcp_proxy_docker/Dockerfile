@@ -1,19 +1,25 @@
-# 使用 NVIDIA CUDA 12 Runtime 作为基底
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+# 使用 Ubuntu 24.04 (Noble) 作为基底，它包含最新的 libstdc++ (支持 GLIBCXX_3.4.32)
+FROM ubuntu:24.04
 
-# 配置代理 (加速构建)
-ENV http_proxy=http://10.1.14.185:10808
-ENV https_proxy=http://10.1.14.185:10808
-ENV all_proxy=socks5://10.1.14.185:10808
-ENV no_proxy=localhost,127.0.0.1,10.1.14.177,10.1.14.185
-# global-agent (onnxruntime-node install.js 使用) 需要此变量才能走代理
-ENV GLOBAL_AGENT_HTTPS_PROXY=http://10.1.14.185:10808
+# 配置代理与镜像 (加速构建) - 注释掉硬编码代理，改为通过 build-arg 传递或使用宿主环境
+# ENV http_proxy=http://10.1.14.185:10808
+# ENV https_proxy=http://10.1.14.185:10808
+# ENV all_proxy=socks5://10.1.14.185:10808
+# ENV no_proxy=localhost,127.0.0.1,10.1.14.177,10.1.14.185
 
 # 避免交互式提示
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 1. 系统底层工具 & Node.js 22
-RUN apt-get update -y && apt-get install -y --fix-missing \
+# 1. 配置 Ubuntu 镜像并安装核心工具与 Node.js 22
+RUN if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/ubuntu.sources && \
+        sed -i 's/security.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/ubuntu.sources; \
+    fi && \
+    if [ -f /etc/apt/sources.list ]; then \
+        sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list && \
+        sed -i 's/security.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list; \
+    fi && \
+    apt-get update -y && apt-get install -y --fix-missing \
     curl \
     ca-certificates \
     python3 \
@@ -22,15 +28,18 @@ RUN apt-get update -y && apt-get install -y --fix-missing \
     build-essential \
     libgomp1 \
     util-linux \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
     && git config --global user.email "gitnexus@example.com" \
     && git config --global user.name "GitNexus Builder" \
     && git config --global --add safe.directory "*" \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --fix-missing nodejs \
     && ln -s /usr/bin/python3 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 核心参数配置
+# 设置 npm 全局配置以增加稳定性
+RUN npm config set fetch-retry-maxtimeout 600000 && \
+    npm config set fetch-retries 5 && \
+    npm config set fetch-retry-mintimeout 20000
 ENV PATH="/app/gitnexus/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 ENV HF_HOME="/app/models"
 ENV XENOVA_CACHE="/app/models"
@@ -38,7 +47,7 @@ ENV HF_ENDPOINT="https://hf-mirror.com"
 
 WORKDIR /app
 
-# 安装 mcp-proxy 和 serve (用于托管前端)
+# 安装 mcp-proxy 和 serve
 RUN npm install -g mcp-proxy serve --registry=http://registry.npmmirror.com
 
 # 3. 复制项目文件
@@ -51,11 +60,11 @@ WORKDIR /app/gitnexus-shared
 RUN npm install --registry=http://registry.npmmirror.com --no-audit --no-fund --ignore-scripts && \
     ./node_modules/.bin/tsc
 
-# 5. 构建 GitNexus (Backend) 并预下载模型
+# 5. 构建 GitNexus (Backend)
 WORKDIR /app/gitnexus
+# 注意：不再执行 node_modules/onnxruntime-node/script/install，省去数GB的 GPU 依赖下载
 RUN npm install --registry=http://registry.npmmirror.com --no-audit --no-fund --ignore-scripts && \
     npm rebuild @ladybugdb/core && \
-    node node_modules/onnxruntime-node/script/install && \
     npx tsc && \
     mkdir -p dist/_shared && \
     cp -r /app/gitnexus-shared/src/* dist/_shared/ && \
@@ -63,9 +72,6 @@ RUN npm install --registry=http://registry.npmmirror.com --no-audit --no-fund --
     mkdir -p dist/gitnexus/vendor && \
     cp -r vendor/* dist/gitnexus/vendor/ && \
     chmod +x dist/gitnexus/src/cli/index.js
-
-# 5.5 集成本地下载的模型 (由宿主机挂载，此处仅作为占位说明)
-# COPY mcp_proxy_docker/models /app/models
 
 # 6. 构建 GitNexus Web (Frontend)
 WORKDIR /app/gitnexus-web
@@ -81,6 +87,7 @@ RUN pip3 install --no-cache-dir -i http://mirrors.aliyun.com/pypi/simple/ --trus
 
 # Copy application code
 COPY ./mcp_proxy_docker/app ./app
+COPY ./mcp_proxy_docker/proxy.js ./proxy.js
 
 # Expose ports
 EXPOSE 1347 1348 1349 1350

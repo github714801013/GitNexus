@@ -1,43 +1,65 @@
 #!/bin/bash
-# 远程部署脚本 - 绕过本地 Docker 缺失问题
+# GitNexus 远程部署脚本 (Bash 版)
+# 功能：本地构建 -> 压缩导出 -> SCP 传输 -> 远程加载 -> 容器启动
 
+set -e
+
+# 配置参数
 REMOTE_HOST="10.1.14.177"
 REMOTE_USER="ji99"
 REMOTE_PATH="/home/ji99/Project/mcp_gitnexus_server"
+REGISTRY_URL="harbor.saas.ch999.cn:1088/common"
 IMAGE_NAME="gitnexus-mcp-proxy"
-ARCHIVE_NAME="gitnexus_deploy.tar.gz"
+TAR_FILE="gitnexus_noble_deploy.tar.gz"
 
-echo "--- 步骤 1: 打包源码 (排除 node_modules, models) ---"
-# 在项目根目录下执行
-tar --exclude='node_modules' --exclude='.git' --exclude='.history' --exclude='mcp_proxy_docker/models' \
-    -czf "$ARCHIVE_NAME" \
-    gitnexus gitnexus-shared gitnexus-web mcp_proxy_docker
+# 自动修复 Windows Bash 下的 Docker 路径问题
+DOCKER_HELPER_PATH=$(where.exe docker-credential-desktop.exe 2>/dev/null | head -n 1)
+if [ -n "$DOCKER_HELPER_PATH" ]; then
+    DOCKER_BIN_DIR=$(dirname "$DOCKER_HELPER_PATH" | sed 's/\\/\//g' | sed 's/C:/\/c/' | sed 's/c:/\/c/')
+    export PATH="$PATH:$DOCKER_BIN_DIR"
+fi
 
-echo "--- 步骤 2: 发送源码到远程服务器 ---"
-scp "$ARCHIVE_NAME" mcp_proxy_docker/auto_verify.py repos.json mcp_proxy_docker/docker-compose-vllm.yml "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
+echo "=== 步骤 1: 本地构建镜像 (使用缓存) ==="
+version=$(git rev-parse --short HEAD 2>/dev/null || echo "latest")
+full_image_tag="${REGISTRY_URL}/${IMAGE_NAME}:${version}"
 
-echo "--- 步骤 3: 远程执行构建与部署 ---"
+export DOCKER_BUILDKIT=1
+docker build -t "${full_image_tag}" -f mcp_proxy_docker/Dockerfile .
+
+# 同时也打一个 latest 标签
+docker tag "${full_image_tag}" "${IMAGE_NAME}:latest"
+
+echo ""
+echo "=== 步骤 2: 导出并压缩镜像 (流式操作，避免临时大文件) ==="
+# 使用管道直接压缩，减少磁盘占用和 IO 锁风险
+docker save "${IMAGE_NAME}:latest" | gzip > "${TAR_FILE}"
+
+echo ""
+echo "=== 步骤 3: 传输镜像和配置到远端 ==="
+ssh "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p ${REMOTE_PATH}/models"
+scp "${TAR_FILE}" mcp_proxy_docker/auto_verify.py repos.json mcp_proxy_docker/docker-compose-vllm.yml "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
+
+echo ""
+echo "=== 步骤 4: 远程部署与启动 ==="
 ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
     set -e
     cd "${REMOTE_PATH}"
-    echo "正在解压源码..."
-    tar -xzf "$ARCHIVE_NAME"
     
-    echo "正在构建 Docker 镜像 (可能需要 5-10 分钟)..."
-    docker build --network=host --progress=plain \
-        --build-arg VITE_BACKEND_URL="http://${REMOTE_HOST}:1349" \
-        -t "${IMAGE_NAME}:latest" -f mcp_proxy_docker/Dockerfile .
+    echo "正在加载镜像..."
+    gunzip -c "${TAR_FILE}" | docker load
     
-    echo "停止并移除旧容器..."
+    echo "清理传输文件..."
+    rm "${TAR_FILE}"
+
+    echo "停止旧容器..."
     docker stop "${IMAGE_NAME}" 2>/dev/null || true
     docker rm "${IMAGE_NAME}" 2>/dev/null || true
-    
-    echo "启动 vLLM 双实例搜索与索引引擎 (按需下载模型权重)..."
+
+    echo "启动辅助引擎 (vLLM)..."
     docker compose -f docker-compose-vllm.yml up -d
-    
-    echo "启动新容器 (代理服务 & 挂载模型目录)..."
+
+    echo "启动主代理容器..."
     docker run -d --name "${IMAGE_NAME}" \
-        --gpus all \
         -p 1347:1347 -p 1348:1348 -p 1349:1349 -p 1350:1350 \
         -v /home/ji99/gitnexus:/projects \
         -v "${REMOTE_PATH}/models:/app/models" \
@@ -52,16 +74,14 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
         -e GITNEXUS_ALLOW_REMOTE_MODELS="true" \
         "${IMAGE_NAME}:latest"
     
-    echo "--- 步骤 4: 启动全自动验证程序 ---"
+    echo "--- 执行自动验证 ---"
     python3 auto_verify.py
-    
-    echo "清理远程压缩包与无用镜像..."
-    rm "$ARCHIVE_NAME"
-    docker image prune -f
 EOF
 
-echo "--- 步骤 5: 清理本地压缩包 ---"
-rm "$ARCHIVE_NAME"
+echo ""
+echo "=== 步骤 5: 部署完成，查看日志 ==="
+ssh "${REMOTE_USER}@${REMOTE_HOST}" "docker logs --tail 20 ${IMAGE_NAME}"
 
-echo "远程部署完成，正在查看初始启动日志..."
-ssh "${REMOTE_USER}@${REMOTE_HOST}" -t "docker logs --tail 20 ${IMAGE_NAME}"
+# 本地清理
+rm -f "${TAR_FILE}"
+

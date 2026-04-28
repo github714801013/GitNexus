@@ -106,6 +106,7 @@ local_docs/
 # Local agent scratch / review prompts (never commit)
 .tmp/
 .agents/
+docs/superpowers/TODO.md*
 # Deployment artifacts
 *.tar.gz
 *.tar
