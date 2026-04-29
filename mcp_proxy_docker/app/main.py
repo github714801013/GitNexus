@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 import os
 import asyncio
 import logging
@@ -22,15 +22,42 @@ def get_indexing_concurrency():
 
 _concurrency = get_indexing_concurrency()
 _analyze_semaphore: asyncio.Semaphore = asyncio.Semaphore(_concurrency)
+_queued_repo_paths: set[str] = set()
+_pending_repo_requests: dict[str, tuple[str, Optional[str], Optional[str]]] = {}
+_queued_repo_lock = asyncio.Lock()
 
-async def run_guarded_analyze(repo_path: str, clone_url: Optional[str] = None, branch: Optional[str] = None):
+async def queue_guarded_analyze(repo_path: str, clone_url: Optional[str] = None, branch: Optional[str] = None) -> bool:
+    repo_key = os.path.abspath(repo_path)
+    async with _queued_repo_lock:
+        if repo_key in _queued_repo_paths:
+            _pending_repo_requests[repo_key] = (repo_path, clone_url, branch)
+            logger.info(f"Deferring duplicate indexing task for {repo_path}")
+            return False
+        _queued_repo_paths.add(repo_key)
+
+    asyncio.create_task(run_guarded_analyze(repo_path, clone_url, branch, repo_key))
+    return True
+
+async def run_guarded_analyze(repo_path: str, clone_url: Optional[str] = None, branch: Optional[str] = None, repo_key: Optional[str] = None):
     """
     Runs indexing with concurrency control.
     """
-    async with _analyze_semaphore:
-        logger.info(f"Indexing task started for {repo_path}")
-        await asyncio.to_thread(run_analyze, repo_path, clone_url, branch)
-        logger.info(f"Indexing task finished for {repo_path}")
+    repo_key = repo_key or os.path.abspath(repo_path)
+    try:
+        async with _analyze_semaphore:
+            logger.info(f"Indexing task started for {repo_path}")
+            await asyncio.to_thread(run_analyze, repo_path, clone_url, branch)
+            logger.info(f"Indexing task finished for {repo_path}")
+    except Exception:
+        logger.error(f"Indexing task failed for {repo_path}", exc_info=True)
+    finally:
+        async with _queued_repo_lock:
+            pending = _pending_repo_requests.pop(repo_key, None)
+            if pending:
+                logger.info(f"Scheduling deferred indexing task for {repo_path}")
+                asyncio.create_task(run_guarded_analyze(pending[0], pending[1], pending[2], repo_key))
+            else:
+                _queued_repo_paths.discard(repo_key)
 
 async def warmup_extensions():
     """
@@ -69,8 +96,19 @@ async def lifespan(app: FastAPI):
             if repos_list:
                 first = repos_list[0]
                 repo_path = os.path.join(projects_root, first.get("full_name"))
+                repo_key = os.path.abspath(repo_path)
+                async with _queued_repo_lock:
+                    _queued_repo_paths.add(repo_key)
                 logger.info(f"Warmup indexing for {repo_path}")
-                await asyncio.to_thread(run_analyze, repo_path, first.get("clone_url"), first.get("branch"))
+                try:
+                    await asyncio.to_thread(run_analyze, repo_path, first.get("clone_url"), first.get("branch"))
+                finally:
+                    async with _queued_repo_lock:
+                        pending = _pending_repo_requests.pop(repo_key, None)
+                        if pending:
+                            asyncio.create_task(run_guarded_analyze(pending[0], pending[1], pending[2], repo_key))
+                        else:
+                            _queued_repo_paths.discard(repo_key)
 
             # 2. Schedule the rest with concurrency control
             for repo in repos_list[1:]:
@@ -79,8 +117,9 @@ async def lifespan(app: FastAPI):
                 branch = repo.get("branch")
                 if full_name:
                     repo_path = os.path.join(projects_root, full_name)
-                    logger.info(f"Scheduling startup index: {full_name} -> {repo_path}")
-                    asyncio.create_task(run_guarded_analyze(repo_path, clone_url, branch))
+                    queued = await queue_guarded_analyze(repo_path, clone_url, branch)
+                    if queued:
+                        logger.info(f"Scheduling startup index: {full_name} -> {repo_path}")
         except Exception as e:
             logger.error(f"Failed to auto-index repos on startup: {e}")
     else:
@@ -97,8 +136,7 @@ def health_check():
 
 @app.post("/webhook/gitea")
 async def gitea_webhook(
-    request: Request, 
-    background_tasks: BackgroundTasks
+    request: Request
 ):
     """
     Webhook handler for Gitea.
@@ -167,10 +205,10 @@ async def gitea_webhook(
             logger.error(f"Failed to update repos.json concurrently: {e}")
 
         logger.info(f"Queueing indexing for {repo_name} (URL: {clone_url}, Branch: {branch}) at {repo_path}")
-        # Pass clone_url and branch to background task to allow cloning and switching branches
-        background_tasks.add_task(run_guarded_analyze, repo_path, clone_url, branch)
-        
-        return {"status": "accepted", "repository": repo_name, "path": repo_path}
+        queued = await queue_guarded_analyze(repo_path, clone_url, branch)
+        status = "accepted" if queued else "deferred"
+
+        return {"status": status, "repository": repo_name, "path": repo_path}
     except HTTPException:
         raise
     except Exception as e:

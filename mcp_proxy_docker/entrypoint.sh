@@ -35,19 +35,34 @@ cd /app/mcp_proxy
 # 1. Start the uvicorn server in the background (handles webhooks and indexing)
 echo "Starting GitNexus Webhook and Watcher service on port 1347..."
 uvicorn app.main:app --host 0.0.0.0 --port 1347 --log-level info &
+uvicorn_pid=$!
 
 # 2. Start the GitNexus HTTP API (UI Backend) on port 1349
 echo "Starting GitNexus HTTP API (UI Backend) on port 1349..."
 node /app/gitnexus/dist/gitnexus/src/cli/index.js serve --port 1349 --host 0.0.0.0 &
+serve_pid=$!
 
 # 3. Start the GitNexus Web UI on port 1350
 echo "Starting GitNexus Web UI on port 1350 (via proxy)..."
 # Use a custom proxy script to route /api to the backend and serve static files for others
 node /app/mcp_proxy/proxy.js &
+proxy_pid=$!
 
 # Wait a bit for initialization
 sleep 2
 
-# 4. Start the mcp-proxy in the foreground (exposes gitnexus mcp as SSE)
+# 4. Start the mcp-proxy (exposes gitnexus mcp as SSE)
 echo "Starting mcp-proxy (SSE) wrapping 'node /app/gitnexus/dist/gitnexus/src/cli/index.js mcp' on port 1348..."
-exec mcp-proxy --port 1348 --address 0.0.0.0 node /app/gitnexus/dist/gitnexus/src/cli/index.js mcp
+mcp-proxy --port 1348 --address 0.0.0.0 node /app/gitnexus/dist/gitnexus/src/cli/index.js mcp &
+mcp_pid=$!
+
+trap 'kill -TERM "$uvicorn_pid" "$serve_pid" "$proxy_pid" "$mcp_pid" 2>/dev/null || true; wait 2>/dev/null || true' TERM INT
+
+set +e
+wait -n "$uvicorn_pid" "$serve_pid" "$proxy_pid" "$mcp_pid"
+exit_code=$?
+set -e
+echo "A GitNexus service exited with code ${exit_code}; stopping remaining services."
+kill -TERM "$uvicorn_pid" "$serve_pid" "$proxy_pid" "$mcp_pid" 2>/dev/null || true
+wait 2>/dev/null || true
+exit "$exit_code"

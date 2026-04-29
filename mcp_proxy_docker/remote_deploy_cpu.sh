@@ -1,7 +1,4 @@
 #!/bin/bash
-# 远程部署脚本 - 绕过本地 Docker 缺失问题
-
-#!/bin/bash
 # CPU 服务器远程部署脚本 - 采用 SSH 隧道拉取镜像模式
 # 解决 1. 远程服务器网络隔离 2. 导出/同步 Tar 包慢 的问题
 
@@ -22,11 +19,11 @@ REGISTRY_URL="${REGISTRY_HOST}:${REGISTRY_PORT}/common"
 IMAGE_NAME="gitnexus-mcp-proxy-cpu"
 
 # --- 2. 统一 Token 管理 ---
-GITEA_TOKEN="401a8a2a8339719a3a313eece19bc1d312f3531b"
-EMBEDDING_API_KEY="sk-oS0AUaRLvSTUDy1MoMPjxA"
-EMBEDDING_URL="https://dashscope.ch999.cn/base/v1"
-EMBEDDING_MODEL="text-embedding-v4"
-EMBEDDING_DIMS=1024
+: "${gitnexus_gitea_token:?gitnexus_gitea_token environment variable is required}"
+: "${EMBEDDING_API_KEY:?EMBEDDING_API_KEY environment variable is required}"
+EMBEDDING_URL="http://10.1.14.158:8080"
+EMBEDDING_MODEL="qwen3-embedding-4b"
+EMBEDDING_DIMS=2560
 
 echo "=== 步骤 1: 获取版本号 ==="
 version=$(git rev-parse --short HEAD 2>/dev/null || echo "v1.0.0")
@@ -44,13 +41,13 @@ echo "=== 步骤 3: 推送镜像到私有仓库 ==="
 docker push "${full_image_name}"
 
 echo "=== 步骤 4: 同步配置文件到远端 ==="
-ssh -i "$HOME/.ssh/id_rsa_gitnexus" "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p ${REMOTE_PATH} ${PROJECTS_PATH} ${DATA_PATH}"
-scp -i "$HOME/.ssh/id_rsa_gitnexus" mcp_proxy_docker/auto_verify.py repos.json "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
-scp -i "$HOME/.ssh/id_rsa_gitnexus" repos.json "${REMOTE_USER}@${REMOTE_HOST}:${PROJECTS_PATH}/"
+ssh "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p \"${REMOTE_PATH}\" \"${PROJECTS_PATH}\" \"${DATA_PATH}\" && if [ -f \"${REMOTE_PATH}/repos.json\" ]; then cp \"${REMOTE_PATH}/repos.json\" \"${REMOTE_PATH}/repos.json.bak\"; fi && if [ -f \"${PROJECTS_PATH}/repos.json\" ]; then cp \"${PROJECTS_PATH}/repos.json\" \"${PROJECTS_PATH}/repos.json.bak\"; fi && if [ -f \"${DATA_PATH}/registry.json\" ]; then cp \"${DATA_PATH}/registry.json\" \"${DATA_PATH}/registry.json.bak\"; fi && find \"${PROJECTS_PATH}\" -path '*/.gitnexus/meta.json' -type f -exec cp {} {}.bak \\;"
+scp mcp_proxy_docker/auto_verify.py repos.json "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
+scp repos.json "${REMOTE_USER}@${REMOTE_HOST}:${PROJECTS_PATH}/"
 
 echo "=== 步骤 5: 通过 SSH 隧道远端拉取并启动 ==="
 # 使用 -R 将远端的 1088 端口转发到本地可以访问的 harbor 地址
-ssh -i "$HOME/.ssh/id_rsa_gitnexus" -o StrictHostKeyChecking=no \
+ssh -o StrictHostKeyChecking=no \
     -R "${REGISTRY_PORT}:${REGISTRY_HOST}:${REGISTRY_PORT}" \
     "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
     set -e
@@ -74,11 +71,12 @@ ssh -i "$HOME/.ssh/id_rsa_gitnexus" -o StrictHostKeyChecking=no \
         -v "${PROJECTS_PATH}:/projects" \
         -v "${DATA_PATH}:/root/.gitnexus" \
         --restart always \
-        -e GITEA_TOKEN="${GITEA_TOKEN}" \
+        -e GITEA_TOKEN="${gitnexus_gitea_token}" \
         -e GITNEXUS_EMBEDDING_API_KEY="${EMBEDDING_API_KEY}" \
         -e GITNEXUS_EMBEDDING_URL="${EMBEDDING_URL}" \
         -e GITNEXUS_EMBEDDING_MODEL="${EMBEDDING_MODEL}" \
         -e GITNEXUS_EMBEDDING_DIMS="${EMBEDDING_DIMS}" \
+        -e GITNEXUS_EMBEDDING_TIMEOUT_MS=3600000 \
         -e GITNEXUS_EMBEDDING_DEVICE=cpu \
         -e GITNEXUS_ALLOW_REMOTE_MODELS=true \
         -e GITNEXUS_EMBEDDING_BATCH_SIZE=10 \
@@ -87,6 +85,14 @@ ssh -i "$HOME/.ssh/id_rsa_gitnexus" -o StrictHostKeyChecking=no \
     echo "等待服务启动..."
     sleep 5
     docker logs --tail 50 "${IMAGE_NAME}"
+
+    echo ""
+    echo "--- 验证 Embedding 服务 ---"
+    time curl http://10.1.14.158:8080/embeddings -X POST -H "Content-Type: application/json" -d '{
+      "input": "My text to embed",
+      "model": "qwen3-embedding-4b",
+      "dimensions": 2560
+    }'
 EOF
 
 echo ""

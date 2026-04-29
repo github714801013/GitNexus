@@ -91,6 +91,7 @@ export interface RegistryEntry {
   storagePath: string;
   indexedAt: string;
   lastCommit: string;
+  branch?: string;
   /** See {@link RepoMeta.remoteUrl}. Mirrored from meta at register time. */
   remoteUrl?: string;
   stats?: RepoMeta['stats'];
@@ -287,13 +288,52 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
   }
 };
 
+const LOCK_STALE_MS = 10 * 60_000;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const acquireRegistryLock = async (): Promise<() => Promise<void>> => {
+  const dir = getGlobalDir();
+  await fs.mkdir(dir, { recursive: true });
+  const lockPath = path.join(dir, 'registry.lock');
+
+  while (true) {
+    try {
+      await fs.mkdir(lockPath);
+      return async () => {
+        await fs.rm(lockPath, { recursive: true, force: true });
+      };
+    } catch (err) {
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? (err as NodeJS.ErrnoException).code
+          : undefined;
+      if (code !== 'EEXIST') throw err;
+      const stat = await fs.stat(lockPath).catch(() => null);
+      if (stat && Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+        await fs.rm(lockPath, { recursive: true, force: true });
+      }
+      await sleep(100);
+    }
+  }
+};
+
 /**
  * Write the global registry to disk
  */
 const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getGlobalRegistryPath(), JSON.stringify(entries, null, 2), 'utf-8');
+  const registryPath = getGlobalRegistryPath();
+  const tempPath = path.join(dir, `registry.${process.pid}.${Date.now()}.tmp`);
+  await fs.writeFile(tempPath, JSON.stringify(entries, null, 2), 'utf-8');
+  try {
+    await fs.rename(tempPath, registryPath);
+  } catch (err) {
+    if (process.platform !== 'win32') throw err;
+    await fs.rm(registryPath, { force: true });
+    await fs.rename(tempPath, registryPath);
+  }
 };
 
 /**
@@ -417,81 +457,87 @@ export const registerRepo = async (
   // falling back to `path.resolve` when the path doesn't exist.
   const canonicalInput = canonicalizePath(repoPath);
 
-  const entries = await readRegistry();
-  const existingIdx = entries.findIndex((e) => {
-    // Canonicalise the STORED entry too so pre-canonicalisation
-    // registries (written by older versions, or paths passed in a
-    // different form) still match correctly. `canonicalizePath` falls
-    // back to `path.resolve` when the path no longer exists on disk,
-    // so stale entries that have been rm'd externally still resolve
-    // to a stable key instead of throwing.
-    const a = canonicalizePath(e.path);
-    const b = canonicalInput;
-    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
-  });
-  const existing = existingIdx >= 0 ? entries[existingIdx] : null;
+  const releaseRegistryLock = await acquireRegistryLock();
+  try {
+    const entries = await readRegistry();
+    const existingIdx = entries.findIndex((e) => {
+      // Canonicalise the STORED entry too so pre-canonicalisation
+      // registries (written by older versions, or paths passed in a
+      // different form) still match correctly. `canonicalizePath` falls
+      // back to `path.resolve` when the path no longer exists on disk,
+      // so stale entries that have been rm'd externally still resolve
+      // to a stable key instead of throwing.
+      const a = canonicalizePath(e.path);
+      const b = canonicalInput;
+      return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    });
+    const existing = existingIdx >= 0 ? entries[existingIdx] : null;
 
-  // Precedence: explicit --name > preserved alias > remote-inferred > basename.
-  // Skip the `git config` subprocess entirely when --name was passed —
-  // the remote isn't consulted in that case.
-  let name: string;
-  let isPreservedAlias = false;
-  if (opts?.name !== undefined) {
-    name = opts.name;
-  } else {
-    // Compute the remote-derived name at most once. It feeds both the
-    // alias-preservation check (`hasCustomAlias` needs it to distinguish
-    // a sticky user alias from a previously-stored remote inference) and
-    // the fallback name when neither --name nor a preserved alias apply.
-    const inferred = getInferredRepoName(resolved);
-    if (existing && hasCustomAlias(existing, inferred)) {
-      name = existing.name;
-      isPreservedAlias = true;
+    // Precedence: explicit --name > preserved alias > remote-inferred > basename.
+    // Skip the `git config` subprocess entirely when --name was passed —
+    // the remote isn't consulted in that case.
+    let name: string;
+    let isPreservedAlias = false;
+    if (opts?.name !== undefined) {
+      name = opts.name;
     } else {
-      name = inferred ?? path.basename(resolved);
+      // Compute the remote-derived name at most once. It feeds both the
+      // alias-preservation check (`hasCustomAlias` needs it to distinguish
+      // a sticky user alias from a previously-stored remote inference) and
+      // the fallback name when neither --name nor a preserved alias apply.
+      const inferred = getInferredRepoName(resolved);
+      if (existing && hasCustomAlias(existing, inferred)) {
+        name = existing.name;
+        isPreservedAlias = true;
+      } else {
+        name = inferred ?? path.basename(resolved);
+      }
     }
-  }
 
-  // Duplicate-name guard: only fire when the user EXPLICITLY asked for
-  // this name (via opts.name or a preserved alias). Unqualified basename
-  // and remote-inferred collisions are preserved for backward-compat —
-  // they still register, and the user sees the ambiguity at `-r` / `list`
-  // resolution time (which is already improved by the disambiguated error
-  // messages and list output #829 ships).
-  const explicitName = opts?.name !== undefined || isPreservedAlias;
-  if (explicitName && !opts?.allowDuplicateName) {
-    // Compare canonical-vs-canonical here too so `/var/foo` and
-    // `/private/var/foo` (same repo, different form) aren't treated as
-    // two colliding paths.
-    const collidingEntry = entries.find(
-      (e, i) =>
-        i !== existingIdx &&
-        e.name.toLowerCase() === name.toLowerCase() &&
-        canonicalizePath(e.path) !== canonicalInput,
-    );
-    if (collidingEntry) {
-      throw new RegistryNameCollisionError(name, collidingEntry.path, resolved);
+    // Duplicate-name guard: only fire when the user EXPLICITLY asked for
+    // this name (via opts.name or a preserved alias). Unqualified basename
+    // and remote-inferred collisions are preserved for backward-compat —
+    // they still register, and the user sees the ambiguity at `-r` / `list`
+    // resolution time (which is already improved by the disambiguated error
+    // messages and list output #829 ships).
+    const explicitName = opts?.name !== undefined || isPreservedAlias;
+    if (explicitName && !opts?.allowDuplicateName) {
+      // Compare canonical-vs-canonical here too so `/var/foo` and
+      // `/private/var/foo` (same repo, different form) aren't treated as
+      // two colliding paths.
+      const collidingEntry = entries.find(
+        (e, i) =>
+          i !== existingIdx &&
+          e.name.toLowerCase() === name.toLowerCase() &&
+          canonicalizePath(e.path) !== canonicalInput,
+      );
+      if (collidingEntry) {
+        throw new RegistryNameCollisionError(name, collidingEntry.path, resolved);
+      }
     }
+
+    const entry: RegistryEntry = {
+      name,
+      path: resolved,
+      storagePath,
+      indexedAt: meta.indexedAt,
+      lastCommit: meta.lastCommit,
+      branch: meta.branch,
+      remoteUrl: meta.remoteUrl,
+      stats: meta.stats,
+    };
+
+    if (existingIdx >= 0) {
+      entries[existingIdx] = entry;
+    } else {
+      entries.push(entry);
+    }
+
+    await writeRegistry(entries);
+    return name;
+  } finally {
+    await releaseRegistryLock();
   }
-
-  const entry: RegistryEntry = {
-    name,
-    path: resolved,
-    storagePath,
-    indexedAt: meta.indexedAt,
-    lastCommit: meta.lastCommit,
-    remoteUrl: meta.remoteUrl,
-    stats: meta.stats,
-  };
-
-  if (existingIdx >= 0) {
-    entries[existingIdx] = entry;
-  } else {
-    entries.push(entry);
-  }
-
-  await writeRegistry(entries);
-  return name;
 };
 
 /**
@@ -505,11 +551,16 @@ export const unregisterRepo = async (repoPath: string): Promise<void> => {
   // and vice versa. Matches the semantics of `registerRepo` and
   // `resolveRegistryEntry` post-#1003 review.
   const resolved = canonicalizePath(repoPath);
-  const entries = await readRegistry();
-  const matches = (a: string, b: string) =>
-    process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
-  const filtered = entries.filter((e) => !matches(canonicalizePath(e.path), resolved));
-  await writeRegistry(filtered);
+  const releaseRegistryLock = await acquireRegistryLock();
+  try {
+    const entries = await readRegistry();
+    const matches = (a: string, b: string) =>
+      process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    const filtered = entries.filter((e) => !matches(canonicalizePath(e.path), resolved));
+    await writeRegistry(filtered);
+  } finally {
+    await releaseRegistryLock();
+  }
 };
 
 /**
@@ -704,26 +755,32 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
 export const listRegisteredRepos = async (opts?: {
   validate?: boolean;
 }): Promise<RegistryEntry[]> => {
-  const entries = await readRegistry();
-  if (!opts?.validate) return entries;
+  if (!opts?.validate) return readRegistry();
 
-  // Validate each entry still has a .gitnexus/ directory
-  const valid: RegistryEntry[] = [];
-  for (const entry of entries) {
-    try {
-      await fs.access(path.join(entry.storagePath, 'meta.json'));
-      valid.push(entry);
-    } catch {
-      // Index no longer exists — skip
+  const releaseRegistryLock = await acquireRegistryLock();
+  try {
+    const entries = await readRegistry();
+
+    // Validate each entry still has a .gitnexus/ directory
+    const valid: RegistryEntry[] = [];
+    for (const entry of entries) {
+      try {
+        await fs.access(path.join(entry.storagePath, 'meta.json'));
+        valid.push(entry);
+      } catch {
+        // Index no longer exists — skip
+      }
     }
-  }
 
-  // If we pruned any entries, save the cleaned registry
-  if (valid.length !== entries.length) {
-    await writeRegistry(valid);
-  }
+    // If we pruned any entries, save the cleaned registry
+    if (valid.length !== entries.length) {
+      await writeRegistry(valid);
+    }
 
-  return valid;
+    return valid;
+  } finally {
+    await releaseRegistryLock();
+  }
 };
 
 // ─── Global CLI Config (~/.gitnexus/config.json) ─────────────────────────

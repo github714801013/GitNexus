@@ -65,7 +65,7 @@ export class JobManager {
     // Single-slot: reject if another job is active (different repo)
     for (const job of this.jobs.values()) {
       if (!this.isTerminal(job.status)) {
-        throw new Error(`Analysis already in progress (job ${job.id})`);
+        throw new Error(`已有任务正在执行，请等待当前任务完成后再试 (job ${job.id})`);
       }
     }
 

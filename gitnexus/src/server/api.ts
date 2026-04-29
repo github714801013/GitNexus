@@ -613,6 +613,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           path: r.path,
           indexedAt: r.indexedAt,
           lastCommit: r.lastCommit,
+          branch: r.branch,
           stats: r.stats,
         })),
       );
@@ -1367,7 +1368,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       res.status(202).json({ jobId: job.id, status: job.status });
     } catch (err: any) {
-      if (err.message?.includes('already in progress')) {
+      if (err.message?.includes('已有任务正在执行')) {
         res.status(409).json({ error: err.message });
       } else {
         res.status(500).json({ error: err.message || 'Failed to start analysis' });
@@ -1435,9 +1436,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
 
       // Lazy-load embedder to avoid loading onnxruntime-node at server startup
-      const { initEmbedder, embedBatch, isEmbedderReady } = await import(
-        '../core/embeddings/embedder.js'
-      );
+      const { initEmbedder, embedBatch, isEmbedderReady } =
+        await import('../core/embeddings/embedder.js');
       if (!isEmbedderReady()) {
         if (!_embedderInitPromise) {
           _embedderInitPromise = initEmbedder().catch((err) => {
@@ -1566,7 +1566,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       res.status(202).json({ jobId: job.id, status: 'analyzing' });
     } catch (err: any) {
-      if (err.message?.includes('already in progress')) {
+      if (err.message?.includes('已有任务正在执行')) {
         res.status(409).json({ error: err.message });
       } else {
         res.status(500).json({ error: err.message || 'Failed to start embedding generation' });

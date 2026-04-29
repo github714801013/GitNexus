@@ -247,6 +247,61 @@ const WAITER_TIMEOUT_MS = 15_000;
 
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
+const VECTOR_LOCK_RETRY_DELAY_MS = 3000;
+
+/**
+ * Load the FTS extension on a connection, retrying on lock errors.
+ * LOAD EXTENSION fts requires a write lock; a concurrent analyze may hold it briefly.
+ */
+async function loadFTSExtension(conn: lbug.Connection): Promise<void> {
+  let lastErr: Error | null = null;
+  for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
+    try {
+      await conn.query('LOAD EXTENSION fts');
+      return;
+    } catch (err: any) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      const msg = lastErr.message;
+      if (msg.includes('already loaded')) return;
+      const isLock = msg.includes('Could not set lock') || msg.includes('lock');
+      if (!isLock || attempt === LOCK_RETRY_ATTEMPTS) break;
+      await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
+    }
+  }
+  // Not installed — try INSTALL then LOAD
+  try {
+    await conn.query('INSTALL fts');
+    await conn.query('LOAD EXTENSION fts');
+  } catch (err2: any) {
+    const msg2 = String(err2?.message ?? '');
+    if (!msg2.includes('already loaded') && !msg2.includes('already installed')) {
+      throw err2;
+    }
+  }
+}
+
+/**
+ * Load the VECTOR extension on a connection, retrying on lock errors.
+ * LOAD EXTENSION VECTOR requires a write lock; a concurrent analyze may hold it briefly.
+ */
+async function loadVectorExtension(conn: lbug.Connection): Promise<void> {
+  let lastErr: Error | null = null;
+  for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
+    try {
+      await conn.query('INSTALL VECTOR');
+      await conn.query('LOAD EXTENSION VECTOR');
+      return;
+    } catch (err: any) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      const msg = lastErr.message;
+      if (msg.includes('already loaded') || msg.includes('already installed')) return;
+      const isLock = msg.includes('Could not set lock') || msg.includes('lock');
+      if (!isLock || attempt === LOCK_RETRY_ATTEMPTS) break;
+      await new Promise((resolve) => setTimeout(resolve, VECTOR_LOCK_RETRY_DELAY_MS * attempt));
+    }
+  }
+  throw lastErr ?? new Error('VECTOR extension load failed');
+}
 
 /** Deduplicates concurrent initLbug calls for the same repoId */
 const initPromises = new Map<string, Promise<void>>();
@@ -338,6 +393,28 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   shared.refCount++;
   const db = shared.db;
 
+  // Validate DB integrity with a lightweight probe before committing to the pool.
+  // new lbug.Database() succeeds even on corrupt files — the error only surfaces
+  // on first query. Catch it here so we never register a broken pool entry.
+  {
+    const probeConn = createConnection(shared.db);
+    try {
+      await probeConn.query('RETURN 1');
+    } catch (err: any) {
+      probeConn.close().catch(() => {});
+      shared.refCount--;
+      if (shared.refCount === 0) {
+        shared.db.close().catch(() => {});
+        dbCache.delete(dbPath);
+      }
+      throw new Error(
+        `LadybugDB at ${dbPath} failed integrity check: ${err?.message ?? err}. ` +
+          `Run: gitnexus analyze`,
+      );
+    }
+    probeConn.close().catch(() => {});
+  }
+
   // Pre-create the full pool upfront so createConnection() (which silences
   // stdout) is never called lazily during active query execution.
   // Mark preWarmActive so the watchdog timer doesn't interfere.
@@ -356,34 +433,21 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // the connection while the async FTS load is in progress.
   if (!shared.ftsLoaded) {
     try {
-      await available[0].query('LOAD EXTENSION fts');
+      await loadFTSExtension(available[0]);
       shared.ftsLoaded = true;
-    } catch {
-      // Extension may not be installed — try INSTALL then LOAD (requires network)
-      try {
-        await available[0].query('INSTALL fts');
-        await available[0].query('LOAD EXTENSION fts');
-        shared.ftsLoaded = true;
-      } catch (err: any) {
-        const msg = err?.message || '';
-        if (msg.includes('already loaded') || msg.includes('already installed')) {
-          shared.ftsLoaded = true;
-        } else {
-          // FTS queries will fail gracefully if extension load fails
-          console.warn(`[gitnexus] FTS extension load failed: ${msg}`);
-        }
-      }
+    } catch (err: any) {
+      // FTS queries will fail gracefully if extension load fails
+      console.warn(`[gitnexus] FTS extension load failed: ${err?.message || err}`);
     }
   }
 
   // Load VECTOR extension once per shared Database for semantic search support.
   if (!shared.vectorLoaded) {
     try {
-      await available[0].query('INSTALL VECTOR');
-      await available[0].query('LOAD EXTENSION VECTOR');
+      await loadVectorExtension(available[0]);
       shared.vectorLoaded = true;
-    } catch {
-      // VECTOR extension may not be available
+    } catch (err: any) {
+      console.warn(`[gitnexus] VECTOR extension load failed: ${err?.message || err}`);
     }
   }
 
@@ -448,34 +512,21 @@ export async function initLbugWithDb(
   // Load FTS extension if not already loaded on this Database
   if (!shared.ftsLoaded) {
     try {
-      await available[0].query('LOAD EXTENSION fts');
+      await loadFTSExtension(available[0]);
       shared.ftsLoaded = true;
-    } catch {
-      // Extension may not be installed — try INSTALL then LOAD (requires network)
-      try {
-        await available[0].query('INSTALL fts');
-        await available[0].query('LOAD EXTENSION fts');
-        shared.ftsLoaded = true;
-      } catch (err: any) {
-        const msg = err?.message || '';
-        if (msg.includes('already loaded') || msg.includes('already installed')) {
-          shared.ftsLoaded = true;
-        } else {
-          // FTS queries will fail gracefully if extension load fails
-          console.warn(`[gitnexus] FTS extension load failed: ${msg}`);
-        }
-      }
+    } catch (err: any) {
+      // FTS queries will fail gracefully if extension load fails
+      console.warn(`[gitnexus] FTS extension load failed: ${err?.message || err}`);
     }
   }
 
   // Load VECTOR extension for semantic search support
   if (!shared.vectorLoaded) {
     try {
-      await available[0].query('INSTALL VECTOR');
-      await available[0].query('LOAD EXTENSION VECTOR');
+      await loadVectorExtension(available[0]);
       shared.vectorLoaded = true;
-    } catch {
-      // VECTOR extension may not be available
+    } catch (err: any) {
+      console.warn(`[gitnexus] VECTOR extension load failed: ${err?.message || err}`);
     }
   }
 

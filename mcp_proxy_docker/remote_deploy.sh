@@ -11,6 +11,7 @@ REMOTE_PATH="/home/ji99/Project/mcp_gitnexus_server"
 REGISTRY_URL="harbor.saas.ch999.cn:1088/common"
 IMAGE_NAME="gitnexus-mcp-proxy"
 TAR_FILE="gitnexus_noble_deploy.tar.gz"
+: "${gitnexus_gitea_token:?gitnexus_gitea_token environment variable is required}"
 
 # 自动修复 Windows Bash 下的 Docker 路径问题
 DOCKER_HELPER_PATH=$(where.exe docker-credential-desktop.exe 2>/dev/null | head -n 1)
@@ -24,7 +25,7 @@ version=$(git rev-parse --short HEAD 2>/dev/null || echo "latest")
 full_image_tag="${REGISTRY_URL}/${IMAGE_NAME}:${version}"
 
 export DOCKER_BUILDKIT=1
-docker build -t "${full_image_tag}" -f mcp_proxy_docker/Dockerfile --build-arg VITE_BACKEND_URL=/ .
+MSYS_NO_PATHCONV=1 docker build -t "${full_image_tag}" -f mcp_proxy_docker/Dockerfile --build-arg VITE_BACKEND_URL=/ .
 
 # 同时也打一个 latest 标签
 docker tag "${full_image_tag}" "${IMAGE_NAME}:latest"
@@ -36,7 +37,7 @@ docker save "${IMAGE_NAME}:latest" | gzip > "${TAR_FILE}"
 
 echo ""
 echo "=== 步骤 3: 传输镜像和配置到远端 ==="
-ssh "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p ${REMOTE_PATH}/models"
+ssh "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p \"${REMOTE_PATH}/models\" /home/ji99/.gitnexus && if [ -f \"${REMOTE_PATH}/repos.json\" ]; then cp \"${REMOTE_PATH}/repos.json\" \"${REMOTE_PATH}/repos.json.bak\"; fi && if [ -f /home/ji99/gitnexus/repos.json ]; then cp /home/ji99/gitnexus/repos.json /home/ji99/gitnexus/repos.json.bak; fi && if [ -f /home/ji99/.gitnexus/registry.json ]; then cp /home/ji99/.gitnexus/registry.json \"${REMOTE_PATH}/registry.json.bak\"; fi && find /home/ji99/gitnexus -path '*/.gitnexus/meta.json' -type f -exec cp {} {}.bak \\;"
 scp "${TAR_FILE}" mcp_proxy_docker/auto_verify.py repos.json mcp_proxy_docker/docker-compose-vllm.yml "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
 
 echo ""
@@ -52,7 +53,7 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
     rm "${TAR_FILE}"
 
     echo "停止旧容器..."
-    docker stop "${IMAGE_NAME}" 2>/dev/null || true
+    docker stop -t 30 "${IMAGE_NAME}" 2>/dev/null || true
     docker rm "${IMAGE_NAME}" 2>/dev/null || true
 
     echo "启动辅助引擎 (vLLM)..."
@@ -60,17 +61,19 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
 
     echo "启动主代理容器..."
     docker run -d --name "${IMAGE_NAME}" \
+        --stop-timeout 300 \
         -p 1347:1347 -p 1348:1348 -p 1349:1349 -p 1350:1350 \
         -v /home/ji99/gitnexus:/projects \
         -v "${REMOTE_PATH}/models:/app/models" \
         -v "/home/ji99/.gitnexus:/root/.gitnexus" \
         --restart always \
-        -e GITEA_TOKEN="401a8a2a8339719a3a313eece19bc1d312f3531b" \
+        -e GITEA_TOKEN="${gitnexus_gitea_token}" \
         -e INDEXING_CONCURRENCY="3" \
         -e GITNEXUS_EMBEDDING_URL="http://${REMOTE_HOST}:8001/v1" \
         -e GITNEXUS_INDEX_EMBEDDING_URL="http://${REMOTE_HOST}:8002/v1" \
         -e GITNEXUS_EMBEDDING_MODEL="Alibaba-NLP/gte-Qwen2-1.5B-instruct" \
         -e GITNEXUS_EMBEDDING_DIMS="1536" \
+        -e GITNEXUS_EMBEDDING_TIMEOUT_MS="3600000" \
         -e GITNEXUS_ALLOW_REMOTE_MODELS="true" \
         "${IMAGE_NAME}:latest"
     

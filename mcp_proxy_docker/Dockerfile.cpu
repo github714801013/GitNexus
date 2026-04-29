@@ -1,19 +1,27 @@
 # 使用 Ubuntu 24.04 作为基底 (CPU 模式)
 FROM ubuntu:24.04
 
-# 配置代理 (加速构建)
-ENV http_proxy=http://10.1.14.185:10808
-ENV https_proxy=http://10.1.14.185:10808
-ENV all_proxy=socks5://10.1.14.185:10808
-ENV no_proxy=localhost,127.0.0.1,10.1.14.177,10.1.14.185
+# 配置代理 (加速构建) - 已注释以避免环境差异导致的 503 错误
+# ENV http_proxy=http://10.1.14.185:10808
+# ENV https_proxy=http://10.1.14.185:10808
+# ENV all_proxy=socks5://10.1.14.185:10808
+# ENV no_proxy=localhost,127.0.0.1,10.1.14.177,10.1.14.185
 # global-agent (onnxruntime-node install.js 使用) 需要此变量才能走代理
-ENV GLOBAL_AGENT_HTTPS_PROXY=http://10.1.14.185:10808
+# ENV GLOBAL_AGENT_HTTPS_PROXY=http://10.1.14.185:10808
 
 # 避免交互式提示
 ENV DEBIAN_FRONTEND=noninteractive
 
 # 1. 系统底层工具 & Node.js 22
-RUN apt-get update -y && apt-get install -y --fix-missing \
+RUN if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/ubuntu.sources && \
+        sed -i 's/security.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/ubuntu.sources; \
+    fi && \
+    if [ -f /etc/apt/sources.list ]; then \
+        sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list && \
+        sed -i 's/security.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list; \
+    fi && \
+    apt-get update -y && apt-get install -y --fix-missing \
     curl \
     ca-certificates \
     python3 \
@@ -81,6 +89,7 @@ RUN pip3 install --no-cache-dir -i http://mirrors.aliyun.com/pypi/simple/ --trus
 
 # Copy application code
 COPY ./mcp_proxy_docker/app ./app
+COPY ./mcp_proxy_docker/proxy.js ./proxy.js
 
 # Expose ports
 EXPOSE 1347 1348 1349 1350

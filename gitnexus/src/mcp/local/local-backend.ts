@@ -25,6 +25,7 @@ import { parseDiffHunks, type FileDiff } from '../../storage/git.js';
 import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
+  loadMeta,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import { GroupService, type GroupToolPort } from '../../core/group/service.js';
@@ -267,6 +268,8 @@ export class LocalBackend {
 
       const storagePath = entry.storagePath;
       const lbugPath = path.join(storagePath, 'lbug');
+      const meta = entry.branch ? undefined : await loadMeta(storagePath).catch(() => undefined);
+      const branch = entry.branch ?? meta?.branch;
 
       // Clean up any leftover KuzuDB files from before the LadybugDB migration.
       // If kuzu exists but lbug doesn't, warn so the user knows to re-analyze.
@@ -286,6 +289,7 @@ export class LocalBackend {
         indexedAt: entry.indexedAt,
         lastCommit: entry.lastCommit,
         remoteUrl: entry.remoteUrl,
+        branch,
         stats: entry.stats,
       };
 

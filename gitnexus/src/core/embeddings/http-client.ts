@@ -5,10 +5,18 @@
  * Imported by both the core embedder (batch) and MCP embedder (query).
  */
 
-const HTTP_TIMEOUT_MS = 30_000;
+const readPositiveInt = (value: string | undefined, fallback: number): number => {
+  if (value === undefined) return fallback;
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const HTTP_TIMEOUT_MS = readPositiveInt(process.env.GITNEXUS_EMBEDDING_TIMEOUT_MS, 3_600_000);
 const HTTP_MAX_RETRIES = 2;
 const HTTP_RETRY_BACKOFF_MS = 1_000;
 const HTTP_BATCH_SIZE = 64;
+// 并发发送的 batch 数量，充分利用多实例 vLLM / nginx LB
+const HTTP_CONCURRENCY = readPositiveInt(process.env.GITNEXUS_EMBEDDING_CONCURRENCY, 4);
 const DEFAULT_DIMS = 512;
 
 interface HttpConfig {
@@ -140,7 +148,9 @@ const httpEmbedBatch = async (
     console.error(`Status: ${status}`);
     console.error(`Batch Size: ${batch.length}`);
     console.error(`Total Chars: ${batch.reduce((sum, s) => sum + s.length, 0)}`);
-    console.error(`First 100 chars of first text: "${batch[0]?.substring(0, 100).replace(/\n/g, '\\n')}"`);
+    console.error(
+      `First 100 chars of first text: "${batch[0]?.substring(0, 100).replace(/\n/g, '\\n')}"`,
+    );
     console.error(`Error Response Body: ${errorDetail}`);
 
     if ((status === 429 || status >= 500) && attempt < HTTP_MAX_RETRIES) {
@@ -184,25 +194,30 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
   if (!config) throw new Error('HTTP embedding not configured');
 
   const url = `${config.baseUrl}/embeddings`;
-  const allVectors: Float32Array[] = [];
+  const expected = config.dimensions ?? DEFAULT_DIMS;
 
+  // Split into batches, preserving original order via index
+  const batches: Array<{ texts: string[]; offset: number; batchIndex: number }> = [];
   for (let i = 0; i < texts.length; i += HTTP_BATCH_SIZE) {
-    const batch = texts.slice(i, i + HTTP_BATCH_SIZE);
-    const batchIndex = Math.floor(i / HTTP_BATCH_SIZE);
-    const items = await httpEmbedBatch(url, batch, config.model, config.apiKey, batchIndex);
+    batches.push({
+      texts: texts.slice(i, i + HTTP_BATCH_SIZE),
+      offset: i,
+      batchIndex: Math.floor(i / HTTP_BATCH_SIZE),
+    });
+  }
 
-    if (items.length !== batch.length) {
+  const allVectors: Float32Array[] = new Array(texts.length);
+
+  const processBatch = async (b: { texts: string[]; offset: number; batchIndex: number }) => {
+    const items = await httpEmbedBatch(url, b.texts, config.model, config.apiKey, b.batchIndex);
+    if (items.length !== b.texts.length) {
       throw new Error(
-        `Embedding endpoint returned ${items.length} vectors for ${batch.length} texts ` +
-          `(${safeUrl(url)}, batch ${batchIndex})`,
+        `Embedding endpoint returned ${items.length} vectors for ${b.texts.length} texts ` +
+          `(${safeUrl(url)}, batch ${b.batchIndex})`,
       );
     }
-
-    for (const item of items) {
-      const vec = new Float32Array(item.embedding);
-      // Fail fast on dimension mismatch rather than inserting bad vectors
-      // into the FLOAT[N] column which would cause a cryptic Kuzu error.
-      const expected = config.dimensions ?? DEFAULT_DIMS;
+    for (let j = 0; j < items.length; j++) {
+      const vec = new Float32Array(items[j].embedding);
       if (vec.length !== expected) {
         const hint = config.dimensions
           ? 'Update GITNEXUS_EMBEDDING_DIMS to match your model output.'
@@ -212,9 +227,14 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
             `but expected ${expected}d. ${hint}`,
         );
       }
-
-      allVectors.push(vec);
+      allVectors[b.offset + j] = vec;
     }
+  };
+
+  // Sliding concurrency window — keeps HTTP_CONCURRENCY requests in-flight simultaneously
+  // to saturate multi-instance vLLM backends behind nginx LB.
+  for (let i = 0; i < batches.length; i += HTTP_CONCURRENCY) {
+    await Promise.all(batches.slice(i, i + HTTP_CONCURRENCY).map(processBatch));
   }
 
   return allVectors;
