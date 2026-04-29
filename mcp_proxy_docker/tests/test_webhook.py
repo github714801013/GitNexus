@@ -2,7 +2,9 @@ import pytest
 from fastapi.testclient import TestClient
 import os
 import json
+import asyncio
 from mcp_proxy_docker.app.main import app
+from mcp_proxy_docker.app import main
 
 client = TestClient(app)
 
@@ -42,3 +44,18 @@ def test_webhook_missing_repo_name():
         json=payload
     )
     assert response.status_code == 400
+
+def test_warmup_extensions_installs_before_loading(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+
+    assert asyncio.run(main.warmup_extensions()) is True
+
+    script = captured["cmd"][3]
+    assert script.index("INSTALL fts") < script.index("LOAD EXTENSION fts")
+    assert script.index("INSTALL vector") < script.index("LOAD EXTENSION vector")

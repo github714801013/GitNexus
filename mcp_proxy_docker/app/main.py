@@ -4,6 +4,9 @@ import asyncio
 import logging
 import json
 import portalocker
+import shutil
+import subprocess
+import tempfile
 from typing import Optional
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
@@ -65,24 +68,58 @@ async def warmup_extensions():
     This prevents race conditions when multiple parallel processes try to install them.
     """
     logger.info("Warming up LadybugDB extensions (serial)...")
-    gitnexus_bin = "/app/gitnexus/dist/gitnexus/src/cli/index.js"
-    # Run a version check or a non-existent path to trigger initialization
+    warmup_dir = tempfile.mkdtemp(prefix="gitnexus-lbug-warmup-")
+    warmup_db = os.path.join(warmup_dir, "lbug")
+    script = """
+const lbug = await import('@ladybugdb/core');
+const dbPath = process.argv[1];
+let db;
+let conn;
+try {
+  db = new lbug.default.Database(dbPath);
+  conn = new lbug.default.Connection(db);
+  await conn.query('INSTALL fts');
+  await conn.query('LOAD EXTENSION fts');
+  await conn.query('INSTALL vector');
+  await conn.query('LOAD EXTENSION vector');
+  await conn.query('RETURN 1');
+  process.exit(0);
+} catch (err) {
+  console.error(err?.message ?? String(err));
+  process.exit(2);
+} finally {
+  if (conn) await conn.close().catch(() => {});
+  if (db) await db.close().catch(() => {});
+}
+"""
     try:
-        # Using a dummy repo path or just version
-        # Actually, analyze requires a path. We'll use the projects root itself (won't index much)
-        # or just wait for the first one to be serial?
-        # Let's just run 'node cli.js --version' - wait, does that load extensions? 
-        # No, 'analyze' loads extensions.
-        # We'll run one analyze on the first repo in the list serially.
-        return True
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["node", "--input-type=module", "-e", script, warmup_db],
+            cwd="/app/gitnexus",
+            capture_output=True,
+            text=True,
+            check=False,
+            env=os.environ.copy(),
+        )
+        if result.returncode == 0:
+            logger.info("LadybugDB extensions warmed up successfully.")
+            return True
+        logger.warning(
+            "LadybugDB extension warmup failed: %s",
+            (result.stderr or result.stdout or "").strip(),
+        )
     except Exception as e:
         logger.error(f"Warmup failed: {e}")
+    finally:
+        shutil.rmtree(warmup_dir, ignore_errors=True)
     return False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     projects_root = get_projects_root()
     logger.info(f"Starting GitNexus MCP Proxy in Trust Mode with PROJECTS_ROOT={projects_root}")
+    await warmup_extensions()
 
     # 启动时读取 repos.json，对每个 repo 触发后台索引
     repos_file = os.path.join(projects_root, "repos.json")

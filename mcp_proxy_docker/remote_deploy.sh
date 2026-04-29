@@ -39,7 +39,7 @@ echo ""
 echo "=== 步骤 3: 传输镜像和配置到远端 ==="
 ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
     set -e
-    mkdir -p "${REMOTE_PATH}/models" /home/ji99/.gitnexus
+    mkdir -p "${REMOTE_PATH}/models" /home/ji99/.gitnexus /home/ji99/.lbdb
     if [ -f "${REMOTE_PATH}/repos.json" ]; then cp "${REMOTE_PATH}/repos.json" "${REMOTE_PATH}/repos.json.bak"; fi
     if [ -f /home/ji99/gitnexus/repos.json ]; then cp /home/ji99/gitnexus/repos.json /home/ji99/gitnexus/repos.json.bak; fi
     if [ -f /home/ji99/.gitnexus/registry.json ]; then cp /home/ji99/.gitnexus/registry.json "${REMOTE_PATH}/registry.json.bak"; fi
@@ -82,6 +82,7 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
         -v /home/ji99/gitnexus:/projects \
         -v "${REMOTE_PATH}/models:/app/models" \
         -v "/home/ji99/.gitnexus:/root/.gitnexus" \
+        -v "/home/ji99/.lbdb:/root/.lbdb" \
         --restart always \
         -e GITEA_TOKEN="${gitnexus_gitea_token}" \
         -e INDEXING_CONCURRENCY="3" \
