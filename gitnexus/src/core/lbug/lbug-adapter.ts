@@ -145,12 +145,9 @@ let ftsLoaded = false;
 let vectorExtensionLoaded = false;
 
 /**
- * In-process cache of FTS indexes that have been ensured against the current
- * connection. Prevents repeated `CALL CREATE_FTS_INDEX` round-trips inside a
- * single CLI/MCP session — the first call to `ensureFTSIndex` for a given
- * `(tableName, indexName)` pays the LadybugDB cost (~440 ms even when the
- * index already exists on disk), subsequent calls are a Set lookup. Cleared
- * by `closeLbug` so a re-init starts fresh.
+ * 当前连接已确认创建过的 FTS 索引缓存。analyze 在 shadow DB 上调用
+ * `ensureFTSIndex` 时，同一进程内重复创建会直接跳过；`closeLbug`
+ * 会清空缓存，下一次 init 后重新确认。
  *
  * Key format: `${tableName}:${indexName}`.
  */
@@ -339,7 +336,9 @@ const doInitLbug = async (dbPath: string) => {
             await fs.unlink(lockPath);
             continue; // retry
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
         await new Promise((r) => setTimeout(r, 100));
       }
     }
@@ -367,7 +366,9 @@ const doInitLbug = async (dbPath: string) => {
         msg.includes('unreachable');
 
       if (isCorruption) {
-        console.warn(`[lbug] Database corruption detected for ${dbPath}. Attempting auto-repair...`);
+        console.warn(
+          `[lbug] Database corruption detected for ${dbPath}. Attempting auto-repair...`,
+        );
         // Cleanup handles
         try {
           if (conn) await conn.close();
@@ -379,7 +380,7 @@ const doInitLbug = async (dbPath: string) => {
         db = null;
 
         // Purge files
-        const filesToPurge = [dbPath, `${dbPath}.wal`, `${dbPath}.lock`, `${dbPath}.tmp` ];
+        const filesToPurge = [dbPath, `${dbPath}.wal`, `${dbPath}.lock`, `${dbPath}.tmp`];
         for (const f of filesToPurge) {
           try {
             await fs.rm(f, { force: true, recursive: true });
@@ -406,7 +407,9 @@ const doInitLbug = async (dbPath: string) => {
         const typeStr = String(embeddingCol.type || embeddingCol[2]); // e.g. "FLOAT[512]"
         const match = typeStr.match(/\[(\d+)\]/);
         if (match && parseInt(match[1], 10) !== expectedDims) {
-          console.log(`[lbug] Embedding dimension mismatch (found ${match[1]}, expected ${expectedDims}). Dropping table...`);
+          console.log(
+            `[lbug] Embedding dimension mismatch (found ${match[1]}, expected ${expectedDims}). Dropping table...`,
+          );
           await conn.query(`DROP TABLE ${EMBEDDING_TABLE_NAME}`);
         }
       }
@@ -437,7 +440,9 @@ const doInitLbug = async (dbPath: string) => {
       try {
         await lockFd.close();
         await fs.unlink(lockPath);
-      } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
     }
   }
 };
@@ -1338,15 +1343,8 @@ export const createFTSIndex = async (
 const ensureCoreFTSPromises = new Map<string, Promise<void>>();
 
 /**
- * Lazy-create an FTS index, caching the fact in-process.
- *
- * Used by `queryFTS` so that `analyze` doesn't pay the ~440 ms × 5 fixed
- * LadybugDB cost up-front (it dominates analyze on small repos). Instead,
- * the cost is moved to the first `query`/`context` call in a session,
- * where it's amortised across many lookups.
- *
- * Safe to call repeatedly — the in-process Set guarantees only the first
- * call hits LadybugDB. `closeLbug` clears the cache so re-init starts fresh.
+ * 确保当前连接上的 FTS 索引存在，并在进程内缓存确认结果。
+ * 现在主要由 analyze 的 shadow build 阶段调用，查询路径不再用它写 live DB。
  */
 export const ensureFTSIndex = async (
   tableName: string,

@@ -3,10 +3,145 @@ import os
 import json
 import portalocker
 import logging
+import shutil
+import sys
 from typing import Optional
 from urllib.parse import urlparse
 
 logger = logging.getLogger("mcp_proxy.executor")
+
+GITNEXUS_BIN = "/app/gitnexus/dist/gitnexus/src/cli/index.js"
+EMBEDDING_LOG_FILE = "/app/mcp_proxy/logs/gitnexus_embedding_phase.log"
+
+def _is_lock_error(message: str) -> bool:
+    return "Could not set lock" in message or "lock" in message.lower()
+
+def _probe_lbug(lbug_path: str, env: dict) -> tuple[bool, str]:
+    if not os.path.exists(lbug_path):
+        return False, "lbug file does not exist"
+
+    script = """
+const lbug = await import('@ladybugdb/core');
+const dbPath = process.argv[1];
+let db;
+let conn;
+try {
+  db = new lbug.default.Database(dbPath, 0, false, true);
+  conn = new lbug.default.Connection(db);
+  const queryResult = await conn.query('RETURN 1');
+  const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+  await result.getAll();
+  process.exit(0);
+} catch (err) {
+  console.error(err?.message ?? String(err));
+  process.exit(2);
+} finally {
+  if (conn) await conn.close().catch(() => {});
+  if (db) await db.close().catch(() => {});
+}
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script, lbug_path],
+        cwd="/app/gitnexus",
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    return result.returncode == 0, (result.stderr or result.stdout or "").strip()
+
+def _restore_latest_backup(repo_path: str, env: dict) -> tuple[bool, str]:
+    gitnexus_dir = os.path.join(repo_path, ".gitnexus")
+    latest_dir = os.path.join(gitnexus_dir, "backups", "latest")
+    backup_lbug = os.path.join(latest_dir, "lbug")
+    backup_meta = os.path.join(latest_dir, "meta.json")
+    lbug_path = os.path.join(gitnexus_dir, "lbug")
+    meta_path = os.path.join(gitnexus_dir, "meta.json")
+
+    backup_ok, backup_msg = _probe_lbug(backup_lbug, env)
+    if not backup_ok:
+        return False, f"latest backup is not usable: {backup_msg}"
+
+    lbug_tmp = lbug_path + ".restore.tmp"
+    wal_tmp = lbug_path + ".wal.restore.tmp"
+    meta_tmp = meta_path + ".restore.tmp"
+
+    shutil.copy2(backup_lbug, lbug_tmp)
+    backup_wal = os.path.join(latest_dir, "lbug.wal")
+    has_wal = os.path.exists(backup_wal)
+    if has_wal:
+        shutil.copy2(backup_wal, wal_tmp)
+    has_meta = os.path.exists(backup_meta)
+    if has_meta:
+        shutil.copy2(backup_meta, meta_tmp)
+
+    for p in [lbug_path + ".lock", lbug_path + ".wal"]:
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
+
+    os.replace(lbug_tmp, lbug_path)
+    if has_wal:
+        os.replace(wal_tmp, lbug_path + ".wal")
+    if has_meta:
+        os.replace(meta_tmp, meta_path)
+    return True, "restored latest backup"
+
+def _needs_embedding_phase(meta: dict) -> bool:
+    return int(meta.get("stats", {}).get("embeddings") or 0) <= 0
+
+def _process_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+def _try_mark_embedding_phase(repo_path: str) -> bool:
+    marker_dir = os.path.join(repo_path, ".gitnexus")
+    os.makedirs(marker_dir, exist_ok=True)
+    pid_path = os.path.join(marker_dir, "embedding.pid")
+    try:
+        fd = os.open(pid_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            with open(pid_path, "r", encoding="utf-8") as f:
+                pid = int((f.read() or "0").strip())
+            if pid > 0 and _process_is_running(pid):
+                return False
+        except Exception:
+            pass
+        try:
+            os.remove(pid_path)
+            fd = os.open(pid_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return False
+
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))
+    return True
+
+def _start_embedding_phase(repo_path: str, gitnexus_bin: str, env: dict):
+    if os.getenv("GITNEXUS_DISABLE_ASYNC_EMBEDDINGS", "").lower() in {"1", "true", "yes"}:
+        logger.info(f"Async embedding phase disabled for {repo_path}")
+        return
+    if not _try_mark_embedding_phase(repo_path):
+        logger.info(f"Embedding phase already scheduled for {repo_path}")
+        return
+
+    log_path = os.getenv("GITNEXUS_EMBEDDING_PHASE_LOG", EMBEDDING_LOG_FILE)
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    log_file = open(log_path, "a", encoding="utf-8")
+    logger.info(f"Starting background embedding phase for {repo_path}; log={log_path}")
+    subprocess.Popen(
+        [sys.executable, "-m", "app.embedding_phase", repo_path, gitnexus_bin],
+        cwd="/app/mcp_proxy",
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        close_fds=True,
+        env=env,
+    )
 
 def get_authenticated_url(url: str) -> str:
     """
@@ -108,7 +243,7 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
             subprocess.run(["git", "clean", "-fd", "-e", ".gitnexus", "-e", ".gitnexus/"], cwd=repo_path, capture_output=True, check=False)
 
             # Use absolute path to gitnexus binary inside container
-            gitnexus_bin = "/app/gitnexus/dist/gitnexus/src/cli/index.js"
+            gitnexus_bin = GITNEXUS_BIN
 
             # EXPLICITLY pass proxy env vars to ensure fetch works in container runtime
             env = os.environ.copy()
@@ -153,13 +288,11 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
                     with open(meta_path, "r") as f:
                         meta = json.load(f)
                     if meta.get("lastCommit") == current_commit:
-                        # Also verify lbug is intact: must exist, be non-empty, and have no
-                        # leftover shadow.wal (sign of an interrupted atomic swap).
-                        lbug_ok = os.path.exists(lbug_path) and os.path.getsize(lbug_path) > 0
+                        # 真实打开 LadybugDB 做探针，避免 224KB 这类坏文件被 size>0 误判为可用。
+                        lbug_ok, lbug_error = _probe_lbug(lbug_path, env)
                         shadow_leftover = os.path.exists(shadow_wal)
                         if lbug_ok and not shadow_leftover:
                             logger.info(f"Skipping analyze for {repo_path}: already indexed at {current_commit[:8]}")
-                            gitnexus_bin = "/app/gitnexus/dist/gitnexus/src/cli/index.js"
                             register_result = subprocess.run(
                                 ["node", gitnexus_bin, "index", repo_path],
                                 capture_output=True,
@@ -170,16 +303,36 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
                             if register_result.returncode != 0:
                                 logger.warning(f"Failed to refresh registry for {repo_path}; re-indexing.")
                             else:
+                                if _needs_embedding_phase(meta):
+                                    _start_embedding_phase(repo_path, gitnexus_bin, env)
                                 return True
                         else:
-                            logger.warning(f"Index integrity check failed for {repo_path}: lbug_ok={lbug_ok}, shadow_leftover={shadow_leftover}. Re-indexing.")
+                            logger.warning(f"Index integrity check failed for {repo_path}: lbug_ok={lbug_ok}, shadow_leftover={shadow_leftover}, error={lbug_error}.")
+                            if not shadow_leftover and not (lbug_error and _is_lock_error(lbug_error)):
+                                restored, restore_msg = _restore_latest_backup(repo_path, env)
+                                if restored:
+                                    logger.warning(f"Restored latest GitNexus index backup for {repo_path}; refreshing registry.")
+                                    register_result = subprocess.run(
+                                        ["node", gitnexus_bin, "index", repo_path],
+                                        capture_output=True,
+                                        text=True,
+                                        check=False,
+                                        env=env,
+                                    )
+                                    if register_result.returncode == 0:
+                                        return True
+                                    logger.warning(f"Backup restore registry refresh failed for {repo_path}; re-indexing.")
+                                else:
+                                    logger.warning(f"Backup restore skipped for {repo_path}: {restore_msg}. Re-indexing.")
+                            else:
+                                logger.warning(f"Index looks busy for {repo_path}; re-indexing without backup restore.")
                 except Exception:
                     pass
 
-            logger.info(f"Starting gitnexus analyze for {repo_path}")
-            # Incremental indexing: gitnexus analyze handles updates automatically
+            logger.info(f"Starting GitNexus structure analyze for {repo_path}")
+            # 先生成结构索引并 swap 到 live，保证项目尽快可查询；向量化在结构成功后后台补齐。
             result = subprocess.run(
-                ["node", gitnexus_bin, "analyze", repo_path, "--embeddings"],
+                ["node", gitnexus_bin, "analyze", repo_path],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -192,15 +345,23 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
                 logger.info(f"Analyze error/warning output: {result.stderr}")
             
             if result.returncode == 0:
-                logger.info(f"Successfully indexed {repo_path}")
+                logger.info(f"Successfully indexed structure for {repo_path}")
                 # Fix permissions so non-root processes (serve/mcp) can write FTS indexes
                 gitnexus_dir = os.path.join(repo_path, ".gitnexus")
                 if os.path.isdir(gitnexus_dir):
                     subprocess.run(["chmod", "-R", "a+rw", gitnexus_dir], check=False)
                     subprocess.run(["chmod", "a+rwx", gitnexus_dir], check=False)
+                _start_embedding_phase(repo_path, gitnexus_bin, env)
                 return True
             else:
                 logger.error(f"Failed to index {repo_path}. Exit code: {result.returncode}")
+                combined_output = f"{result.stdout}\n{result.stderr}"
+                if "not a valid Lbug database file" in combined_output or "Unable to open database" in combined_output or _is_lock_error(combined_output):
+                    restored, restore_msg = _restore_latest_backup(repo_path, env)
+                    if restored:
+                        logger.warning(f"Restored latest GitNexus index backup for {repo_path} after analyze failure.")
+                    else:
+                        logger.warning(f"Backup restore after analyze failure skipped for {repo_path}: {restore_msg}")
                 return False
                 
     except portalocker.exceptions.AlreadyLocked:

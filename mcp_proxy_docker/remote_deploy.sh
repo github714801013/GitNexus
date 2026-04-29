@@ -37,7 +37,23 @@ docker save "${IMAGE_NAME}:latest" | gzip > "${TAR_FILE}"
 
 echo ""
 echo "=== 步骤 3: 传输镜像和配置到远端 ==="
-ssh "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p \"${REMOTE_PATH}/models\" /home/ji99/.gitnexus && if [ -f \"${REMOTE_PATH}/repos.json\" ]; then cp \"${REMOTE_PATH}/repos.json\" \"${REMOTE_PATH}/repos.json.bak\"; fi && if [ -f /home/ji99/gitnexus/repos.json ]; then cp /home/ji99/gitnexus/repos.json /home/ji99/gitnexus/repos.json.bak; fi && if [ -f /home/ji99/.gitnexus/registry.json ]; then cp /home/ji99/.gitnexus/registry.json \"${REMOTE_PATH}/registry.json.bak\"; fi && find /home/ji99/gitnexus -path '*/.gitnexus/meta.json' -type f -exec cp {} {}.bak \\;"
+ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
+    set -e
+    mkdir -p "${REMOTE_PATH}/models" /home/ji99/.gitnexus
+    if [ -f "${REMOTE_PATH}/repos.json" ]; then cp "${REMOTE_PATH}/repos.json" "${REMOTE_PATH}/repos.json.bak"; fi
+    if [ -f /home/ji99/gitnexus/repos.json ]; then cp /home/ji99/gitnexus/repos.json /home/ji99/gitnexus/repos.json.bak; fi
+    if [ -f /home/ji99/.gitnexus/registry.json ]; then cp /home/ji99/.gitnexus/registry.json "${REMOTE_PATH}/registry.json.bak"; fi
+
+    echo "备份现有索引 meta.json..."
+    if docker image inspect "${IMAGE_NAME}:latest" >/dev/null 2>&1; then
+        docker run --rm --entrypoint sh \
+            -v /home/ji99/gitnexus:/projects \
+            "${IMAGE_NAME}:latest" \
+            -lc 'find /projects -path "*/.gitnexus/meta.json" -type f -exec cp -p {} {}.bak \;'
+    else
+        echo "WARN: ${IMAGE_NAME}:latest 不存在，跳过 meta.json 容器内备份"
+    fi
+EOF
 scp "${TAR_FILE}" mcp_proxy_docker/auto_verify.py repos.json mcp_proxy_docker/docker-compose-vllm.yml "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
 
 echo ""
@@ -87,4 +103,3 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" "docker logs --tail 20 ${IMAGE_NAME}"
 
 # 本地清理
 rm -f "${TAR_FILE}"
-

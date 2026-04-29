@@ -11,4 +11,28 @@ describe('run-analyze module', () => {
     expect(mod.PHASE_LABELS).toBeDefined();
     expect(mod.PHASE_LABELS.parsing).toBe('Parsing code');
   });
+
+  it('does not skip embedding phase when current index has no embeddings', async () => {
+    const mod = await import('../../src/core/run-analyze.js');
+
+    expect(
+      mod.shouldReturnAlreadyUpToDate(
+        { lastCommit: 'abc123', stats: { embeddings: 0 } },
+        'abc123',
+        { embeddings: true },
+      ),
+    ).toBe(false);
+  });
+
+  it('skips current index when embeddings are already present', async () => {
+    const mod = await import('../../src/core/run-analyze.js');
+
+    expect(
+      mod.shouldReturnAlreadyUpToDate(
+        { lastCommit: 'abc123', stats: { embeddings: 42 } },
+        'abc123',
+        { embeddings: true },
+      ),
+    ).toBe(true);
+  });
 });

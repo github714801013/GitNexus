@@ -4,14 +4,11 @@
  * Uses LadybugDB's built-in full-text search indexes for keyword-based search.
  * Always reads from the database (no cached state to drift).
  *
- * FTS indexes are created lazily on first query (via `ensureFTSIndex`) — see
- * `lbug-adapter.ts` for the rationale. This keeps `analyze` fast (the
- * ~440 ms × 5 LadybugDB CREATE_FTS_INDEX cost dominates pipeline time on
- * small repos / CI runners) at the cost of paying that overhead on the
- * first `query`/`context` call in a session.
+ * FTS 索引在 analyze 阶段写入 shadow DB；swap 后查询路径只读取
+ * live DB，不在首次查询时创建索引。
  */
 
-import { queryFTS, ensureFTSIndex } from '../lbug/lbug-adapter.js';
+import { queryFTS } from '../lbug/lbug-adapter.js';
 
 export interface BM25SearchResult {
   filePath: string;
@@ -38,35 +35,11 @@ export const FTS_INDEXES: ReadonlyArray<{
 ];
 
 /**
- * Per-process cache for the MCP pool path: tracks which `(repoId, table)`
- * pairs have been ensured. The CLI/pipeline path gets its own cache inside
- * `lbug-adapter.ts` keyed by table/index, scoped to the singleton connection.
- *
- * IMPORTANT: an entry is added ONLY when the index was confirmed to exist
- * (CREATE_FTS_INDEX succeeded, or failed with `'already exists'`). Other
- * failures (transient lock errors, missing extension, etc.) leave the key
- * unset so the next query retries instead of silently caching the failure.
- *
- * Entries for a given repoId are invalidated when its pool is closed —
- * see the `addPoolCloseListener` registration in `searchFTSFromLbug`.
+ * 兼容旧测试/调用方的失效入口。MCP pool 查询已改为只读优先，
+ * 不再维护“已创建 FTS”缓存，因此这里无需执行任何操作。
  */
-const ensuredPoolFTS = new Set<string>();
-
-/**
- * Drop all ensured-FTS cache entries for a given repoId.
- *
- * Called from the pool-close listener so that a pool teardown / recreation
- * forces the next `searchFTSFromLbug` call to re-issue `CREATE_FTS_INDEX`
- * against the fresh connection rather than trust stale ensure-state from a
- * previous pool lifetime.
- *
- * Exported for tests; the listener wiring is internal.
- */
-export function invalidateEnsuredFTSForRepo(repoId: string): void {
-  const prefix = `${repoId}:`;
-  for (const key of ensuredPoolFTS) {
-    if (key.startsWith(prefix)) ensuredPoolFTS.delete(key);
-  }
+export function invalidateEnsuredFTSForRepo(_repoId: string): void {
+  // no-op
 }
 
 /**
@@ -81,56 +54,6 @@ function registerPoolCloseListenerOnce(
   if (poolCloseListenerRegistered) return;
   poolCloseListenerRegistered = true;
   addPoolCloseListener((repoId) => invalidateEnsuredFTSForRepo(repoId));
-}
-
-const ensurePromises = new Map<string, Promise<void>>();
-
-async function ensureFTSIndexViaExecutor(
-  executor: (cypher: string) => Promise<any[]>,
-  repoId: string,
-  table: string,
-  indexName: string,
-  properties: readonly string[],
-): Promise<void> {
-  const key = `${repoId}:${table}:${indexName}`;
-  if (ensuredPoolFTS.has(key)) return;
-
-  const pending = ensurePromises.get(key);
-  if (pending) return pending;
-
-  const promise = (async () => {
-    const propList = properties.map((p) => `'${p}'`).join(', ');
-    try {
-      await executor(
-        `CALL CREATE_FTS_INDEX('${table}', '${indexName}', [${propList}], stemmer := 'none')`,
-      );
-      // Index was created successfully — safe to cache.
-      ensuredPoolFTS.add(key);
-    } catch (e: any) {
-      // 'already exists' is the happy path (index persists on disk between
-      // process invocations) — cache it. Anything else is treated as a
-      // transient failure: surface a one-time warning and leave the key
-      // unset so the NEXT query retries rather than silently using a
-      // cached failure (which previously disabled BM25 for the whole
-      // process for that repo).
-      const msg = String(e?.message ?? '');
-      if (msg.includes('already exists')) {
-        ensuredPoolFTS.add(key);
-      } else {
-        console.warn(
-          `[gitnexus] FTS index ensure failed for repo "${repoId}" table "${table}" ` +
-            `(index "${indexName}"): ${msg || e}. Will retry on next query.`,
-        );
-      }
-    }
-  })();
-
-  ensurePromises.set(key, promise);
-  try {
-    await promise;
-  } finally {
-    ensurePromises.delete(key);
-  }
 }
 
 /**
@@ -203,12 +126,6 @@ export const searchFTSFromLbug = async (
     registerPoolCloseListenerOnce(addPoolCloseListener);
     const executor = (cypher: string) => executeQuery(repoId, cypher);
 
-    // Lazy-create FTS indexes on first query for this repo (analyze no longer
-    // creates them up-front, so we ensure them here). Cached per-process.
-    for (const { table, indexName, properties } of FTS_INDEXES) {
-      await ensureFTSIndexViaExecutor(executor, repoId, table, indexName, properties);
-    }
-
     fileResults = await queryFTSViaExecutor(executor, 'File', 'file_fts', query, limit);
     functionResults = await queryFTSViaExecutor(executor, 'Function', 'function_fts', query, limit);
     classResults = await queryFTSViaExecutor(executor, 'Class', 'class_fts', query, limit);
@@ -222,11 +139,6 @@ export const searchFTSFromLbug = async (
     );
   } else {
     // Use core lbug adapter (CLI / pipeline context) — also sequential for safety.
-    // Lazy-create FTS indexes on first query (analyze no longer does it).
-    for (const { table, indexName, properties } of FTS_INDEXES) {
-      await ensureFTSIndex(table, indexName, [...properties]).catch(() => {});
-    }
-
     fileResults = await queryFTS('File', 'file_fts', query, limit, false).catch(() => []);
     functionResults = await queryFTS('Function', 'function_fts', query, limit, false).catch(
       () => [],

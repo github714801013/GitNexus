@@ -30,12 +30,19 @@ import {
   registerRepo,
   cleanupOldKuzuFiles,
 } from '../storage/repo-manager.js';
-import { getCurrentCommit, getCurrentBranch, getRemoteUrl, hasGitDir, getInferredRepoName } from '../storage/git.js';
+import {
+  getCurrentCommit,
+  getCurrentBranch,
+  getRemoteUrl,
+  hasGitDir,
+  getInferredRepoName,
+} from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
-import { EMBEDDING_TABLE_NAME, CREATE_VECTOR_INDEX_QUERY } from './lbug/schema.js';
+import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 import { FTS_INDEXES } from './search/bm25-index.js';
+import { backupLatestIndex, probeLbugFile } from './lbug/index-backup.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -93,9 +100,33 @@ export interface AnalyzeResult {
   pipelineResult?: any;
 }
 
+type ExistingAnalyzeMeta = {
+  lastCommit?: string;
+  stats?: {
+    embeddings?: number;
+  };
+};
+
+export function shouldReturnAlreadyUpToDate(
+  existingMeta: ExistingAnalyzeMeta | null | undefined,
+  currentCommit: string,
+  options: Pick<AnalyzeOptions, 'force' | 'embeddings'>,
+): boolean {
+  if (!existingMeta || options.force || existingMeta.lastCommit !== currentCommit) {
+    return false;
+  }
+  if (currentCommit === '') {
+    return false;
+  }
+  if (options.embeddings && (existingMeta.stats?.embeddings ?? 0) <= 0) {
+    return false;
+  }
+  return true;
+}
+
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
-const EMBEDDING_NODE_LIMIT = process.env.GITNEXUS_EMBEDDING_LIMIT 
-  ? parseInt(process.env.GITNEXUS_EMBEDDING_LIMIT, 10) 
+const EMBEDDING_NODE_LIMIT = process.env.GITNEXUS_EMBEDDING_LIMIT
+  ? parseInt(process.env.GITNEXUS_EMBEDDING_LIMIT, 10)
   : 200_000;
 
 export const PHASE_LABELS: Record<string, string> = {
@@ -152,16 +183,13 @@ export async function runFullAnalysis(
   const existingMeta = await loadMeta(storagePath);
 
   // ── Early-return: already up to date ──────────────────────────────
-  if (existingMeta && !options.force && existingMeta.lastCommit === currentCommit) {
-    // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
-    if (currentCommit !== '') {
-      return {
-        repoName: options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
-        repoPath,
-        stats: existingMeta.stats ?? {},
-        alreadyUpToDate: true,
-      };
-    }
+  if (shouldReturnAlreadyUpToDate(existingMeta, currentCommit, options)) {
+    return {
+      repoName: options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
+      repoPath,
+      stats: existingMeta?.stats ?? {},
+      alreadyUpToDate: true,
+    };
   }
 
   // ── Cache embeddings from existing index before rebuild ────────────
@@ -197,7 +225,7 @@ export async function runFullAnalysis(
 
   await closeLbug();
   // Clear any existing shadow files
-  const shadowFiles = [lbugShadowPath, `${lbugShadowPath}.wal`, `${lbugShadowPath}.lock` ];
+  const shadowFiles = [lbugShadowPath, `${lbugShadowPath}.wal`, `${lbugShadowPath}.lock`];
   for (const f of shadowFiles) {
     try {
       await fs.rm(f, { recursive: true, force: true });
@@ -220,14 +248,13 @@ export async function runFullAnalysis(
       progress('lbug', pct, msg);
     });
 
-
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
-    // FTS indexes are created lazily on first `query`/`context` call instead
-    // of eagerly here. On small repos / CI runners the LadybugDB
-    // CREATE_FTS_INDEX cost is ~440 ms × 5 (≈2 s) regardless of table size,
-    // which dominated `analyze` runtime and pushed Windows CI past its
-    // 30 s test budget. Lazy creation is implemented in
-    // `core/search/bm25-index.ts` via `ensureFTSIndex`.
+    progress('fts', 85, 'Creating search indexes...');
+    // 在 shadow DB 上提前创建 FTS，swap 后 live 文件天然带索引；
+    // 查询进程只读 live，避免首次查询时 CREATE_FTS_INDEX 触发 checkpoint 锁等待。
+    for (const { table, indexName, properties } of FTS_INDEXES) {
+      await ensureFTSIndex(table, indexName, [...properties], 'none');
+    }
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
     if (cachedEmbeddings.length > 0) {
@@ -342,25 +369,8 @@ export async function runFullAnalysis(
         embeddings: embeddingCount,
       },
     };
-    await saveMeta(storagePath, meta);
-    // Forward the --name alias and the registry-collision bypass bit.
-    // `allowDuplicateName` is its own concern — independent from the
-    // pipeline `force` above. The CLI maps it from
-    // `--allow-duplicate-name` only; `--force` and `--skills` both
-    // trigger pipeline re-run but never bypass the registry guard.
-    // The returned name is the one actually written to the registry
-    // (after applying the precedence chain in registerRepo) — reuse it
-    // so AGENTS.md / skill files reference the same name MCP clients
-    // will look up (#979).
-    const projectName = await registerRepo(repoPath, meta, {
-      name: options.registryName,
-      allowDuplicateName: options.allowDuplicateName,
-    });
-
-    // Only attempt to update .gitignore when a .git directory is present.
-    if (hasGitDir(repoPath)) {
-      await addToGitignore(repoPath);
-    }
+    let projectName =
+      options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath);
 
     // ── Generate AI context files (best-effort) ───────────────────────
     let aggregatedClusterCount = 0;
@@ -399,8 +409,26 @@ export async function runFullAnalysis(
     // ── Phase 4: Atomic Swap ──────────────────────────────────────────
     progress('lbug', 98, 'Finalizing index (Atomic Swap)...');
 
-    const liveFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock` ];
-    const shadowFiles = [lbugShadowPath, `${lbugShadowPath}.wal` ];
+    const liveFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
+    const shadowFiles = [lbugShadowPath, `${lbugShadowPath}.wal`];
+
+    const shadowProbe = await probeLbugFile(lbugShadowPath);
+    if (!shadowProbe.ok) {
+      throw new Error(
+        `Shadow LadybugDB integrity check failed: ${shadowProbe.error ?? 'unknown error'}`,
+      );
+    }
+
+    const backupResult = await backupLatestIndex({
+      lbugPath,
+      metaPath: path.join(storagePath, 'meta.json'),
+      repoPath,
+    });
+    if (backupResult.status === 'created') {
+      log(`[analyze] Backed up previous live index for ${projectName}`);
+    } else if (backupResult.status === 'skipped-invalid-live') {
+      log(`[analyze] Previous live index was invalid; keeping existing backup for ${projectName}`);
+    }
 
     // 1. Remove old live files
     for (const f of liveFiles) {
@@ -430,6 +458,26 @@ export async function runFullAnalysis(
     }
 
     log(`[analyze] Successfully swapped shadow index to live for ${projectName}`);
+
+    await saveMeta(storagePath, meta);
+    // Forward the --name alias and the registry-collision bypass bit.
+    // `allowDuplicateName` is its own concern — independent from the
+    // pipeline `force` above. The CLI maps it from
+    // `--allow-duplicate-name` only; `--force` and `--skills` both
+    // trigger pipeline re-run but never bypass the registry guard.
+    // The returned name is the one actually written to the registry
+    // (after applying the precedence chain in registerRepo) — reuse it
+    // so AGENTS.md / skill files reference the same name MCP clients
+    // will look up (#979).
+    projectName = await registerRepo(repoPath, meta, {
+      name: options.registryName,
+      allowDuplicateName: options.allowDuplicateName,
+    });
+
+    // Only attempt to update .gitignore when a .git directory is present.
+    if (hasGitDir(repoPath)) {
+      await addToGitignore(repoPath);
+    }
 
     progress('done', 100, 'Done');
 

@@ -16,7 +16,9 @@
  */
 
 import fs from 'fs/promises';
+import path from 'path';
 import lbug from '@ladybugdb/core';
+import { isLbugCorruptionError, restoreLatestIndexBackup } from './index-backup.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -340,7 +342,11 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
  * Pool entry is registered LAST so concurrent executeQuery calls see either
  * "not initialized" (and throw) or a fully ready pool — never a half-built one.
  */
-async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
+async function doInitLbug(
+  repoId: string,
+  dbPath: string,
+  allowRestore: boolean = true,
+): Promise<void> {
   // Check if database exists
   try {
     await fs.stat(dbPath);
@@ -354,10 +360,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
   let shared = dbCache.get(dbPath);
   if (!shared) {
-    // Open in read-write mode so FTS index creation (CREATE_FTS_INDEX) works
-    // on first query after analyze. Read-only mode caused "Cannot execute write
-    // operations in a read-only database" for FTS ensure calls.
-    // Lock conflicts with a concurrent analyze are handled by the retry loop below.
+    // 保持读写打开是因为扩展加载可能需要锁；
+    // 查询路径会拦截 CREATE_FTS_INDEX，避免写 live DB。
+    // 与 analyze 并发时的锁冲突由下面的重试逻辑处理。
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
       silenceStdout();
@@ -366,7 +371,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           dbPath,
           0, // bufferManagerSize (default)
           false, // enableCompression (default)
-          false, // readOnly=false: need write access for CREATE_FTS_INDEX
+          false, // readOnly=false: 扩展加载可能需要锁
         );
         restoreStdout();
         shared = { db, refCount: 0, ftsLoaded: false, vectorLoaded: false };
@@ -383,9 +388,22 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     }
 
     if (!shared) {
+      const msg = lastError?.message || 'unknown error';
+      if (allowRestore && isLbugCorruptionError(msg)) {
+        const restored = await restoreLatestIndexBackup({
+          lbugPath: dbPath,
+          metaPath: path.join(path.dirname(dbPath), 'meta.json'),
+        });
+        if (restored.restored) {
+          console.warn(
+            `[gitnexus] Restored LadybugDB index backup for repo "${repoId}" after open failure.`,
+          );
+          return doInitLbug(repoId, dbPath, false);
+        }
+      }
       throw new Error(
         `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
-          `Retry later. (${lastError?.message || 'unknown error'})`,
+          `Retry later. (${msg})`,
       );
     }
   }
@@ -401,15 +419,27 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     try {
       await probeConn.query('RETURN 1');
     } catch (err: any) {
+      const msg = String(err?.message ?? err);
       probeConn.close().catch(() => {});
       shared.refCount--;
       if (shared.refCount === 0) {
         shared.db.close().catch(() => {});
         dbCache.delete(dbPath);
       }
+      if (allowRestore && isLbugCorruptionError(msg)) {
+        const restored = await restoreLatestIndexBackup({
+          lbugPath: dbPath,
+          metaPath: path.join(path.dirname(dbPath), 'meta.json'),
+        });
+        if (restored.restored) {
+          console.warn(
+            `[gitnexus] Restored LadybugDB index backup for repo "${repoId}" after integrity failure.`,
+          );
+          return doInitLbug(repoId, dbPath, false);
+        }
+      }
       throw new Error(
-        `LadybugDB at ${dbPath} failed integrity check: ${err?.message ?? err}. ` +
-          `Run: gitnexus analyze`,
+        `LadybugDB at ${dbPath} failed integrity check: ${msg}. ` + `Run: gitnexus analyze`,
       );
     }
     probeConn.close().catch(() => {});
@@ -711,13 +741,12 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
 export const isLbugReady = (repoId: string): boolean => pool.has(repoId);
 
 /** Regex to detect write operations in user-supplied Cypher queries.
- * Note: CALL is NOT blocked — it's used for read-only FTS (CALL QUERY_FTS_INDEX)
- * and vector search (CALL QUERY_VECTOR_INDEX). The database is opened in
- * read-only mode as defense-in-depth against write procedures. */
+ * CALL 本身允许用于 QUERY_FTS_INDEX / QUERY_VECTOR_INDEX；
+ * 但 CREATE_FTS_INDEX 属于写 live DB，必须单独拦截。 */
 export const CYPHER_WRITE_RE =
   /(?<!:)\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH|FOREACH|INSTALL|LOAD)\b/i;
 
 /** Check if a Cypher query contains write operations */
 export function isWriteQuery(query: string): boolean {
-  return CYPHER_WRITE_RE.test(query);
+  return CYPHER_WRITE_RE.test(query) || /\bCALL\s+CREATE_FTS_INDEX\b/i.test(query);
 }
