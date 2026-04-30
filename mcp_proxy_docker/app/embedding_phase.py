@@ -29,7 +29,7 @@ def main() -> int:
         with portalocker.Lock(lock_file, timeout=0):
             logger.info("Starting GitNexus embedding phase for %s", repo_path)
             result = subprocess.run(
-                ["node", gitnexus_bin, "analyze", repo_path, "--embeddings", "--skip-agents-md"],
+                ["node", gitnexus_bin, "analyze", repo_path, "--embeddings-only", "--skip-agents-md"],
                 capture_output=True,
                 text=True,
                 check=False,

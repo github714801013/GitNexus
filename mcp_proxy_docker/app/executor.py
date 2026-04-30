@@ -12,6 +12,7 @@ logger = logging.getLogger("mcp_proxy.executor")
 
 GITNEXUS_BIN = "/app/gitnexus/dist/gitnexus/src/cli/index.js"
 EMBEDDING_LOG_FILE = "/app/mcp_proxy/logs/gitnexus_embedding_phase.log"
+DEFER_ANALYZE = "deferred"
 
 def _is_lock_error(message: str) -> bool:
     return "Could not set lock" in message or "lock" in message.lower()
@@ -98,17 +99,57 @@ def _process_is_running(pid: int) -> bool:
     except OSError:
         return False
 
+def _process_is_embedding_phase(pid: int) -> bool:
+    cmdline_path = os.path.join("/proc", str(pid), "cmdline")
+    try:
+        with open(cmdline_path, "rb") as f:
+            cmdline = f.read().replace(b"\x00", b" ").decode("utf-8", errors="ignore")
+    except OSError:
+        return False
+    return "app.embedding_phase" in cmdline or "--embeddings" in cmdline
+
+def _embedding_pid_path(repo_path: str) -> str:
+    return os.path.join(repo_path, ".gitnexus", "embedding.pid")
+
+def _write_embedding_pid(repo_path: str, pid: int):
+    with open(_embedding_pid_path(repo_path), "w", encoding="utf-8") as f:
+        f.write(str(pid))
+
+def _remove_embedding_pid(repo_path: str):
+    try:
+        os.remove(_embedding_pid_path(repo_path))
+    except FileNotFoundError:
+        pass
+
+def _embedding_phase_is_running(repo_path: str) -> bool:
+    try:
+        with open(_embedding_pid_path(repo_path), "r", encoding="utf-8") as f:
+            pid = int((f.read() or "0").strip())
+    except Exception:
+        pid = 0
+    if pid > 0 and _process_is_running(pid) and _process_is_embedding_phase(pid):
+        return True
+
+    lock_file = os.path.join(repo_path, ".gitnexus_embedding.lock")
+    try:
+        with portalocker.Lock(lock_file, timeout=0):
+            return False
+    except portalocker.exceptions.AlreadyLocked:
+        return True
+    except Exception:
+        return False
+
 def _try_mark_embedding_phase(repo_path: str) -> bool:
     marker_dir = os.path.join(repo_path, ".gitnexus")
     os.makedirs(marker_dir, exist_ok=True)
-    pid_path = os.path.join(marker_dir, "embedding.pid")
+    pid_path = _embedding_pid_path(repo_path)
     try:
         fd = os.open(pid_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
         try:
             with open(pid_path, "r", encoding="utf-8") as f:
                 pid = int((f.read() or "0").strip())
-            if pid > 0 and _process_is_running(pid):
+            if pid > 0 and _process_is_running(pid) and _process_is_embedding_phase(pid):
                 return False
         except Exception:
             pass
@@ -134,14 +175,20 @@ def _start_embedding_phase(repo_path: str, gitnexus_bin: str, env: dict):
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     log_file = open(log_path, "a", encoding="utf-8")
     logger.info(f"Starting background embedding phase for {repo_path}; log={log_path}")
-    subprocess.Popen(
-        [sys.executable, "-m", "app.embedding_phase", repo_path, gitnexus_bin],
-        cwd="/app/mcp_proxy",
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        close_fds=True,
-        env=env,
-    )
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-m", "app.embedding_phase", repo_path, gitnexus_bin],
+            cwd="/app/mcp_proxy",
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            env=env,
+        )
+        _write_embedding_pid(repo_path, process.pid)
+    except Exception:
+        _remove_embedding_pid(repo_path)
+        log_file.close()
+        raise
 
 def get_authenticated_url(url: str) -> str:
     """
@@ -212,6 +259,10 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
     try:
         # Acquire per-repo lock
         with portalocker.Lock(lock_file, timeout=60):
+            if _embedding_phase_is_running(repo_path):
+                logger.info(f"Deferring analyze for {repo_path}: embedding phase is already running")
+                return DEFER_ANALYZE
+
             # Ensure the latest code is pulled before indexing
             logger.info(f"Updating latest changes for {repo_path}")            
             # Use authenticated URL for pull as well
@@ -288,6 +339,9 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
                     with open(meta_path, "r") as f:
                         meta = json.load(f)
                     if meta.get("lastCommit") == current_commit:
+                        if _needs_embedding_phase(meta) and _embedding_phase_is_running(repo_path):
+                            logger.info(f"Deferring analyze for {repo_path}: embedding phase is already running")
+                            return DEFER_ANALYZE
                         # 真实打开 LadybugDB 做探针，避免 224KB 这类坏文件被 size>0 误判为可用。
                         lbug_ok, lbug_error = _probe_lbug(lbug_path, env)
                         shadow_leftover = os.path.exists(shadow_wal)

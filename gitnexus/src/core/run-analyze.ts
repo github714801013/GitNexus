@@ -21,6 +21,7 @@ import {
   ensureFTSIndex,
   closeLbug,
   loadCachedEmbeddings,
+  fetchExistingEmbeddingHashes,
 } from './lbug/lbug-adapter.js';
 import {
   getStoragePaths,
@@ -42,7 +43,12 @@ import { generateAIContextFiles } from '../cli/ai-context.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 import { FTS_INDEXES } from './search/bm25-index.js';
-import { backupLatestIndex, probeLbugFile } from './lbug/index-backup.js';
+import {
+  backupLatestIndex,
+  prepareEmbeddingShadowIndex,
+  probeLbugFile,
+  swapEmbeddingShadowToLive,
+} from './lbug/index-backup.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -82,6 +88,10 @@ export interface AnalyzeOptions {
    * of a pipeline re-index.
    */
   allowDuplicateName?: boolean;
+}
+
+export interface EmbeddingsOnlyOptions {
+  registryName?: string;
 }
 
 export interface AnalyzeResult {
@@ -495,5 +505,139 @@ export async function runFullAnalysis(
       /* swallow */
     }
     throw err;
+  }
+}
+
+export async function runEmbeddingsOnly(
+  repoPath: string,
+  options: EmbeddingsOnlyOptions,
+  callbacks: AnalyzeCallbacks,
+): Promise<AnalyzeResult> {
+  const log = (msg: string) => callbacks.onLog?.(msg);
+  const progress = (phase: string, percent: number, message: string) =>
+    callbacks.onProgress(phase, percent, message);
+
+  const { storagePath, lbugPath } = getStoragePaths(repoPath);
+  const metaPath = path.join(storagePath, 'meta.json');
+  const shadowLbugPath = `${lbugPath}.embedding-shadow`;
+  const shadowMetaPath = `${metaPath}.embedding-shadow`;
+  const projectName =
+    options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath);
+  const existingMeta = await loadMeta(storagePath);
+  if (!existingMeta) {
+    throw new Error('No existing GitNexus index found. Run `gitnexus analyze` first.');
+  }
+
+  progress('lbug', 0, 'Preparing embedding shadow index...');
+  const liveProbe = await probeLbugFile(lbugPath);
+  if (!liveProbe.ok) {
+    throw new Error(
+      `Live LadybugDB integrity check failed before embeddings: ${liveProbe.error ?? 'unknown error'}`,
+    );
+  }
+
+  await prepareEmbeddingShadowIndex(lbugPath, metaPath, { shadowLbugPath, shadowMetaPath });
+
+  const shadowProbe = await probeLbugFile(shadowLbugPath);
+  if (!shadowProbe.ok) {
+    throw new Error(
+      `Embedding shadow LadybugDB integrity check failed: ${shadowProbe.error ?? 'unknown error'}`,
+    );
+  }
+
+  progress('lbug', 5, 'Opening embedding shadow index...');
+  await initLbug(shadowLbugPath);
+  try {
+    const existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
+    if (existingEmbeddings && existingEmbeddings.size > 0) {
+      log(`Incremental embeddings: ${existingEmbeddings.size} existing node(s)`);
+    }
+
+    const { readServerMapping } = await import('./embeddings/server-mapping.js');
+    const { runEmbeddingPipeline } = await import('./embeddings/embedding-pipeline.js');
+    const serverName = await readServerMapping(projectName);
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      (p) => {
+        const label =
+          p.phase === 'loading-model'
+            ? 'Loading embedding model...'
+            : p.phase === 'embedding'
+              ? `Embedding ${p.nodesProcessed || 0}/${p.totalNodes || '?'}`
+              : p.phase === 'indexing'
+                ? 'Creating vector index...'
+                : p.phase === 'ready'
+                  ? 'Embeddings complete'
+                  : p.phase;
+        progress(p.phase, p.percent, label);
+      },
+      {},
+      undefined,
+      { repoName: projectName, serverName },
+      existingEmbeddings,
+    );
+
+    let embeddingCount = 0;
+    try {
+      const embResult = await executeQuery(
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`,
+      );
+      embeddingCount = embResult?.[0]?.cnt ?? 0;
+    } catch {
+      /* table may not exist if embeddings never ran */
+    }
+
+    const stats = await getLbugStats();
+    const updatedMeta = {
+      ...existingMeta,
+      indexedAt: new Date().toISOString(),
+      stats: {
+        ...existingMeta.stats,
+        nodes: stats.nodes || existingMeta.stats?.nodes,
+        edges: stats.edges || existingMeta.stats?.edges,
+        embeddings: embeddingCount,
+      },
+    };
+
+    await fs.writeFile(shadowMetaPath, JSON.stringify(updatedMeta, null, 2), 'utf-8');
+    await closeLbug();
+
+    const completedShadowProbe = await probeLbugFile(shadowLbugPath);
+    if (!completedShadowProbe.ok) {
+      throw new Error(
+        `Completed embedding shadow integrity check failed: ${completedShadowProbe.error ?? 'unknown error'}`,
+      );
+    }
+
+    const backupResult = await backupLatestIndex({
+      lbugPath,
+      metaPath,
+      repoPath,
+    });
+    if (backupResult.status === 'created') {
+      log(`[embeddings] Backed up previous live index for ${projectName}`);
+    } else if (backupResult.status === 'skipped-invalid-live') {
+      log(
+        `[embeddings] Previous live index was invalid; keeping existing backup for ${projectName}`,
+      );
+    }
+
+    progress('lbug', 99, 'Swapping embedding shadow index to live...');
+    await swapEmbeddingShadowToLive(lbugPath, metaPath, { shadowLbugPath, shadowMetaPath });
+
+    const repoName = await registerRepo(repoPath, updatedMeta, { name: options.registryName });
+    progress('done', 100, 'Done');
+    return {
+      repoName,
+      repoPath,
+      stats: updatedMeta.stats,
+    };
+  } finally {
+    try {
+      await closeLbug();
+    } catch {
+      /* swallow */
+    }
   }
 }

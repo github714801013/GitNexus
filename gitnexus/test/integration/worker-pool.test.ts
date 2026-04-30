@@ -7,7 +7,11 @@
  * but workers need compiled .js files.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { createWorkerPool, WorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
+import {
+  createWorkerPool,
+  getWorkerSubBatchTimeoutMs,
+  WorkerPool,
+} from '../../src/core/ingestion/workers/worker-pool.js';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -146,6 +150,13 @@ describe('worker pool integration', () => {
     expect(() => {
       pool = createWorkerPool(badUrl, 1);
     }).toThrow(/Worker script not found/);
+  });
+
+  it('reads worker sub-batch timeout from environment', () => {
+    vi.stubEnv('GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS', '3600000');
+    expect(getWorkerSubBatchTimeoutMs()).toBe(3_600_000);
+    vi.unstubAllEnvs();
+    expect(getWorkerSubBatchTimeoutMs()).toBe(30_000);
   });
 
   // ─── Unhappy paths ──────────────────────────────────────────────────

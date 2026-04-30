@@ -6,6 +6,11 @@ describe('run-analyze module', () => {
     expect(typeof mod.runFullAnalysis).toBe('function');
   });
 
+  it('exports runEmbeddingsOnly as a function', async () => {
+    const mod = await import('../../src/core/run-analyze.js');
+    expect(typeof mod.runEmbeddingsOnly).toBe('function');
+  });
+
   it('exports PHASE_LABELS', async () => {
     const mod = await import('../../src/core/run-analyze.js');
     expect(mod.PHASE_LABELS).toBeDefined();

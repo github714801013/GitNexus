@@ -19,7 +19,7 @@ import {
   RegistryNameCollisionError,
 } from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
-import { runFullAnalysis } from '../core/run-analyze.js';
+import { runEmbeddingsOnly, runFullAnalysis } from '../core/run-analyze.js';
 import fs from 'fs/promises';
 
 const HEAP_MB = 8192;
@@ -55,6 +55,7 @@ function ensureHeap(): boolean {
 export interface AnalyzeOptions {
   force?: boolean;
   embeddings?: boolean;
+  embeddingsOnly?: boolean;
   skills?: boolean;
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
@@ -202,31 +203,34 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   // ── Run shared analysis orchestrator ───────────────────────────────
   try {
-    const result = await runFullAnalysis(
-      repoPath,
-      {
-        // Pipeline re-index — OR'd with --skills because skill generation
-        // needs a fresh pipelineResult. Has no bearing on the registry
-        // collision guard (see allowDuplicateName below).
-        force: options?.force || options?.skills,
-        embeddings: options?.embeddings,
-        skipGit: options?.skipGit,
-        skipAgentsMd: options?.skipAgentsMd,
-        noStats: options?.noStats,
-        registryName: options?.name,
-        // Registry-collision bypass — its own CLI flag, intentionally NOT
-        // overloading --force. A user who hits the collision guard should
-        // be able to accept the duplicate name without also paying the
-        // cost of a full pipeline re-index. See #829 review round 2.
-        allowDuplicateName: options?.allowDuplicateName,
+    const callbacks = {
+      onProgress: (_phase: string, percent: number, message: string) => {
+        updateBar(percent, message);
       },
-      {
-        onProgress: (_phase, percent, message) => {
-          updateBar(percent, message);
-        },
-        onLog: barLog,
-      },
-    );
+      onLog: barLog,
+    };
+    const result = options?.embeddingsOnly
+      ? await runEmbeddingsOnly(repoPath, { registryName: options?.name }, callbacks)
+      : await runFullAnalysis(
+          repoPath,
+          {
+            // Pipeline re-index — OR'd with --skills because skill generation
+            // needs a fresh pipelineResult. Has no bearing on the registry
+            // collision guard (see allowDuplicateName below).
+            force: options?.force || options?.skills,
+            embeddings: options?.embeddings,
+            skipGit: options?.skipGit,
+            skipAgentsMd: options?.skipAgentsMd,
+            noStats: options?.noStats,
+            registryName: options?.name,
+            // Registry-collision bypass — its own CLI flag, intentionally NOT
+            // overloading --force. A user who hits the collision guard should
+            // be able to accept the duplicate name without also paying the
+            // cost of a full pipeline re-index. See #829 review round 2.
+            allowDuplicateName: options?.allowDuplicateName,
+          },
+          callbacks,
+        );
 
     if (result.alreadyUpToDate) {
       clearInterval(elapsedTimer);

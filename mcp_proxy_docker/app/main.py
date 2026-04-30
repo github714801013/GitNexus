@@ -10,7 +10,7 @@ import tempfile
 from typing import Optional
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
-from .executor import run_analyze
+from .executor import DEFER_ANALYZE, _embedding_phase_is_running, run_analyze
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -22,6 +22,9 @@ def get_projects_root():
 
 def get_indexing_concurrency():
     return int(os.getenv("INDEXING_CONCURRENCY", "1"))
+
+def get_deferred_retry_delay():
+    return int(os.getenv("GITNEXUS_DEFERRED_ANALYZE_RETRY_SECONDS", "60"))
 
 _concurrency = get_indexing_concurrency()
 _analyze_semaphore: asyncio.Semaphore = asyncio.Semaphore(_concurrency)
@@ -41,24 +44,56 @@ async def queue_guarded_analyze(repo_path: str, clone_url: Optional[str] = None,
     asyncio.create_task(run_guarded_analyze(repo_path, clone_url, branch, repo_key))
     return True
 
+async def run_pending_analyze_after_embedding(
+    repo_path: str,
+    repo_key: str,
+    poll_seconds: int,
+):
+    poll_interval = max(poll_seconds, 0.01)
+    while _embedding_phase_is_running(repo_path):
+        await asyncio.sleep(poll_interval)
+
+    async with _queued_repo_lock:
+        pending = _pending_repo_requests.pop(repo_key, None)
+        if pending is None:
+            _queued_repo_paths.discard(repo_key)
+            return
+
+    logger.info(f"Scheduling deferred indexing task for {pending[0]} after embedding phase completed")
+    asyncio.create_task(run_guarded_analyze(pending[0], pending[1], pending[2], repo_key))
+
 async def run_guarded_analyze(repo_path: str, clone_url: Optional[str] = None, branch: Optional[str] = None, repo_key: Optional[str] = None):
     """
     Runs indexing with concurrency control.
     """
     repo_key = repo_key or os.path.abspath(repo_path)
+    result = None
     try:
         async with _analyze_semaphore:
             logger.info(f"Indexing task started for {repo_path}")
-            await asyncio.to_thread(run_analyze, repo_path, clone_url, branch)
+            result = await asyncio.to_thread(run_analyze, repo_path, clone_url, branch)
             logger.info(f"Indexing task finished for {repo_path}")
     except Exception:
         logger.error(f"Indexing task failed for {repo_path}", exc_info=True)
     finally:
         async with _queued_repo_lock:
             pending = _pending_repo_requests.pop(repo_key, None)
-            if pending:
-                logger.info(f"Scheduling deferred indexing task for {repo_path}")
-                asyncio.create_task(run_guarded_analyze(pending[0], pending[1], pending[2], repo_key))
+            if result == DEFER_ANALYZE:
+                if pending is None:
+                    pending = (repo_path, clone_url, branch)
+                _pending_repo_requests[repo_key] = pending
+                poll_seconds = get_deferred_retry_delay()
+                logger.info(f"Queued deferred indexing task for {pending[0]} until embedding phase completes")
+                asyncio.create_task(run_pending_analyze_after_embedding(repo_path, repo_key, poll_seconds))
+            elif pending:
+                if _embedding_phase_is_running(repo_path):
+                    _pending_repo_requests[repo_key] = pending
+                    poll_seconds = get_deferred_retry_delay()
+                    logger.info(f"Queued deferred indexing task for {pending[0]} until embedding phase completes")
+                    asyncio.create_task(run_pending_analyze_after_embedding(repo_path, repo_key, poll_seconds))
+                else:
+                    logger.info(f"Scheduling deferred indexing task for {repo_path}")
+                    asyncio.create_task(run_guarded_analyze(pending[0], pending[1], pending[2], repo_key))
             else:
                 _queued_repo_paths.discard(repo_key)
 

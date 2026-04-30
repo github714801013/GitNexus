@@ -37,7 +37,12 @@ const SUB_BATCH_SIZE = 1500;
 
 /** Per sub-batch timeout. If a single sub-batch takes longer than this,
  *  likely a pathological file (e.g. minified 50MB JS). Fail fast. */
-const SUB_BATCH_TIMEOUT_MS = 30_000;
+const DEFAULT_SUB_BATCH_TIMEOUT_MS = 30_000;
+
+export function getWorkerSubBatchTimeoutMs(): number {
+  const parsed = Number.parseInt(process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SUB_BATCH_TIMEOUT_MS;
+}
 
 /**
  * Create a pool of worker threads.
@@ -86,17 +91,18 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
 
         const resetSubBatchTimer = () => {
           if (subBatchTimer) clearTimeout(subBatchTimer);
+          const timeoutMs = getWorkerSubBatchTimeoutMs();
           subBatchTimer = setTimeout(() => {
             if (!settled) {
               settled = true;
               cleanup();
               reject(
                 new Error(
-                  `Worker ${i} sub-batch timed out after ${SUB_BATCH_TIMEOUT_MS / 1000}s (chunk: ${chunk.length} items).`,
+                  `Worker ${i} sub-batch timed out after ${timeoutMs / 1000}s (chunk: ${chunk.length} items).`,
                 ),
               );
             }
-          }, SUB_BATCH_TIMEOUT_MS);
+          }, timeoutMs);
         };
 
         let subBatchIdx = 0;

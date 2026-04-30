@@ -91,6 +91,7 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
         -e GITNEXUS_EMBEDDING_MODEL="Alibaba-NLP/gte-Qwen2-1.5B-instruct" \
         -e GITNEXUS_EMBEDDING_DIMS="1536" \
         -e GITNEXUS_EMBEDDING_TIMEOUT_MS="3600000" \
+        -e GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS="3600000" \
         -e GITNEXUS_ALLOW_REMOTE_MODELS="true" \
         "${IMAGE_NAME}:latest"
     

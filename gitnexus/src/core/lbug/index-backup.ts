@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { setTimeout as delay } from 'timers/promises';
 import lbug from '@ladybugdb/core';
 
 export interface LbugProbeResult {
@@ -30,6 +31,11 @@ export interface IndexBackupResult {
   reason?: string;
 }
 
+export interface EmbeddingShadowPaths {
+  shadowLbugPath: string;
+  shadowMetaPath: string;
+}
+
 const BACKUP_DIR_NAME = 'backups';
 const LATEST_BACKUP_NAME = 'latest';
 const TMP_BACKUP_NAME = 'latest.tmp';
@@ -48,6 +54,28 @@ async function copyIfExists(source: string, target: string): Promise<boolean> {
   if (!(await exists(source))) return false;
   await fs.copyFile(source, target);
   return true;
+}
+
+async function moveIfExists(source: string, target: string): Promise<boolean> {
+  if (!(await exists(source))) return false;
+  await fs.rename(source, target);
+  return true;
+}
+
+async function renameWithRetry(source: string, target: string): Promise<void> {
+  const retryableCodes = new Set(['EPERM', 'EBUSY', 'ENOTEMPTY']);
+  let lastError: any;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      await fs.rename(source, target);
+      return;
+    } catch (err: any) {
+      lastError = err;
+      if (!retryableCodes.has(err?.code)) throw err;
+      await delay(25 * (attempt + 1));
+    }
+  }
+  throw lastError;
 }
 
 function storagePathFor(lbugPath: string): string {
@@ -172,12 +200,55 @@ export async function backupLatestIndex(options: IndexBackupOptions): Promise<In
   );
 
   if (await exists(latestDir)) {
-    await fs.rename(latestDir, oldDir);
+    await renameWithRetry(latestDir, oldDir);
   }
-  await fs.rename(tmpDir, latestDir);
+  await renameWithRetry(tmpDir, latestDir);
   await fs.rm(oldDir, { recursive: true, force: true });
 
   return { status: 'created', backupPath: latestDir };
+}
+
+export async function prepareEmbeddingShadowIndex(
+  lbugPath: string,
+  metaPath: string,
+  paths?: Partial<EmbeddingShadowPaths>,
+): Promise<EmbeddingShadowPaths> {
+  const shadowLbugPath = paths?.shadowLbugPath ?? `${lbugPath}.embedding-shadow`;
+  const shadowMetaPath = paths?.shadowMetaPath ?? `${metaPath}.embedding-shadow`;
+
+  for (const filePath of [
+    shadowLbugPath,
+    `${shadowLbugPath}.wal`,
+    `${shadowLbugPath}.lock`,
+    shadowMetaPath,
+  ]) {
+    await fs.rm(filePath, { recursive: true, force: true });
+  }
+
+  await fs.copyFile(lbugPath, shadowLbugPath);
+  await copyIfExists(`${lbugPath}.wal`, `${shadowLbugPath}.wal`);
+  await copyIfExists(metaPath, shadowMetaPath);
+
+  return { shadowLbugPath, shadowMetaPath };
+}
+
+export async function swapEmbeddingShadowToLive(
+  lbugPath: string,
+  metaPath: string,
+  paths?: Partial<EmbeddingShadowPaths>,
+): Promise<void> {
+  const shadowLbugPath = paths?.shadowLbugPath ?? `${lbugPath}.embedding-shadow`;
+  const shadowMetaPath = paths?.shadowMetaPath ?? `${metaPath}.embedding-shadow`;
+
+  for (const filePath of [`${lbugPath}.lock`, `${lbugPath}.wal`]) {
+    await fs.rm(filePath, { recursive: true, force: true });
+  }
+
+  await fs.rename(shadowLbugPath, lbugPath);
+  await moveIfExists(`${shadowLbugPath}.wal`, `${lbugPath}.wal`);
+  await moveIfExists(shadowMetaPath, metaPath);
+
+  await fs.rm(`${shadowLbugPath}.lock`, { recursive: true, force: true });
 }
 
 export async function restoreLatestIndexBackup(

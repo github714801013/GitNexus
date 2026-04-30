@@ -4,7 +4,9 @@ import path from 'path';
 import { describe, expect, it } from 'vitest';
 import {
   backupLatestIndex,
+  prepareEmbeddingShadowIndex,
   restoreLatestIndexBackup,
+  swapEmbeddingShadowToLive,
   type LbugProbe,
 } from '../../src/core/lbug/index-backup.js';
 
@@ -77,6 +79,42 @@ describe('index backup', () => {
     await expect(fs.readFile(metaPath, 'utf-8')).resolves.toBe(
       JSON.stringify({ lastCommit: 'good' }),
     );
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('copies live lbug, wal, and meta into an embedding shadow index', async () => {
+    const { dir, lbugPath, metaPath } = await makeRepoStorage();
+    await fs.writeFile(lbugPath, 'live-db');
+    await fs.writeFile(`${lbugPath}.wal`, 'live-wal');
+    await fs.writeFile(metaPath, JSON.stringify({ lastCommit: 'abc' }));
+
+    const paths = await prepareEmbeddingShadowIndex(lbugPath, metaPath);
+
+    await expect(fs.readFile(paths.shadowLbugPath, 'utf-8')).resolves.toBe('live-db');
+    await expect(fs.readFile(`${paths.shadowLbugPath}.wal`, 'utf-8')).resolves.toBe('live-wal');
+    await expect(fs.readFile(paths.shadowMetaPath, 'utf-8')).resolves.toBe(
+      JSON.stringify({ lastCommit: 'abc' }),
+    );
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('swaps an embedding shadow index back to live atomically', async () => {
+    const { dir, lbugPath, metaPath } = await makeRepoStorage();
+    await fs.writeFile(lbugPath, 'old-live');
+    await fs.writeFile(`${lbugPath}.wal`, 'old-wal');
+    await fs.writeFile(`${lbugPath}.lock`, 'old-lock');
+    await fs.writeFile(metaPath, JSON.stringify({ embeddings: 0 }));
+    await fs.writeFile(`${lbugPath}.embedding-shadow`, 'new-live');
+    await fs.writeFile(`${lbugPath}.embedding-shadow.wal`, 'new-wal');
+    await fs.writeFile(`${metaPath}.embedding-shadow`, JSON.stringify({ embeddings: 10 }));
+
+    await swapEmbeddingShadowToLive(lbugPath, metaPath);
+
+    await expect(fs.readFile(lbugPath, 'utf-8')).resolves.toBe('new-live');
+    await expect(fs.readFile(`${lbugPath}.wal`, 'utf-8')).resolves.toBe('new-wal');
+    await expect(fs.readFile(metaPath, 'utf-8')).resolves.toBe(JSON.stringify({ embeddings: 10 }));
+    await expect(fs.access(`${lbugPath}.lock`)).rejects.toThrow();
+    await expect(fs.access(`${lbugPath}.embedding-shadow`)).rejects.toThrow();
     await fs.rm(dir, { recursive: true, force: true });
   });
 });
