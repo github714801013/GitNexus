@@ -23,6 +23,17 @@ export interface ProcessesOutput {
   processResult: ProcessDetectionResult;
 }
 
+const DEFAULT_MAX_PROCESSES_CAP = 300;
+
+export function getMaxProcessesCap(): number {
+  const parsed = Number.parseInt(process.env.GITNEXUS_MAX_PROCESSES ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_PROCESSES_CAP;
+}
+
+export function calculateDynamicMaxProcesses(symbolCount: number): number {
+  return Math.max(20, Math.min(getMaxProcessesCap(), Math.round(symbolCount / 10)));
+}
+
 export const processesPhase: PipelinePhase<ProcessesOutput> = {
   name: 'processes',
   // `structure` supplies `totalFiles` (progress counter) without the spurious
@@ -49,7 +60,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
     ctx.graph.forEachNode((n) => {
       if (n.label !== 'File') symbolCount++;
     });
-    const dynamicMaxProcesses = Math.max(20, Math.min(300, Math.round(symbolCount / 10)));
+    const dynamicMaxProcesses = calculateDynamicMaxProcesses(symbolCount);
 
     const processResult = await processProcesses(
       ctx.graph,

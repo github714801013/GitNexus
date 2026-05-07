@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import {
+  getMaxFileSizeBytes,
   walkRepositoryPaths,
   readFileContents,
 } from '../../src/core/ingestion/filesystem-walker.js';
@@ -76,6 +77,30 @@ describe('filesystem-walker', () => {
       for (const file of files) {
         expect(typeof file.size).toBe('number');
         expect(file.size).toBeGreaterThan(0);
+      }
+    });
+
+    it('uses a configurable max file size threshold', async () => {
+      const largeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-large-'));
+      const largeFile = path.join(largeDir, 'large.ts');
+      await fs.writeFile(largeFile, Buffer.alloc(600 * 1024, 'x'));
+
+      const previous = process.env.GITNEXUS_MAX_FILE_SIZE_BYTES;
+      try {
+        delete process.env.GITNEXUS_MAX_FILE_SIZE_BYTES;
+        expect(getMaxFileSizeBytes()).toBe(512 * 1024);
+        await expect(walkRepositoryPaths(largeDir)).resolves.toEqual([]);
+
+        process.env.GITNEXUS_MAX_FILE_SIZE_BYTES = String(2 * 1024 * 1024);
+        const files = await walkRepositoryPaths(largeDir);
+        expect(files.map((f) => f.path)).toContain('large.ts');
+      } finally {
+        if (previous === undefined) {
+          delete process.env.GITNEXUS_MAX_FILE_SIZE_BYTES;
+        } else {
+          process.env.GITNEXUS_MAX_FILE_SIZE_BYTES = previous;
+        }
+        await fs.rm(largeDir, { recursive: true, force: true });
       }
     });
 

@@ -142,17 +142,6 @@ export async function backupLatestIndex(options: IndexBackupOptions): Promise<In
     return { status: 'skipped-missing-live', reason: 'live lbug does not exist' };
   }
 
-  const liveProbe = await probe(lbugPath);
-  if (!liveProbe.ok) {
-    if (liveProbe.error && isLbugLockError(liveProbe.error)) {
-      throw new Error(`Index backup blocked by live DB lock: ${liveProbe.error}`);
-    }
-    return {
-      status: 'skipped-invalid-live',
-      reason: liveProbe.error ?? 'live lbug probe failed',
-    };
-  }
-
   const storagePath = storagePathFor(lbugPath);
   const backupsDir = path.join(storagePath, BACKUP_DIR_NAME);
   const tmpDir = tmpBackupPath(storagePath);
@@ -173,7 +162,10 @@ export async function backupLatestIndex(options: IndexBackupOptions): Promise<In
   const backupProbe = await probe(tmpLbugPath);
   if (!backupProbe.ok) {
     await fs.rm(tmpDir, { recursive: true, force: true });
-    throw new Error(`Index backup probe failed: ${backupProbe.error ?? 'unknown error'}`);
+    return {
+      status: 'skipped-invalid-live',
+      reason: backupProbe.error ?? 'copied live lbug probe failed',
+    };
   }
 
   const lbugStat = await fs.stat(tmpLbugPath);

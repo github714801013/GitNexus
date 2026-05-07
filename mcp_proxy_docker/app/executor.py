@@ -313,7 +313,7 @@ def run_analyze(repo_path: str, git_url: Optional[str] = None, branch: Optional[
             env["GITNEXUS_FTS_STEMMER"] = os.getenv("GITNEXUS_FTS_STEMMER", "none")
             env["GITNEXUS_EMBEDDING_LIMIT"] = os.getenv("GITNEXUS_EMBEDDING_LIMIT", "500000")
             env["GITNEXUS_REMOTE_DEPLOY"] = os.getenv("GITNEXUS_REMOTE_DEPLOY", "true")
-            env["GITNEXUS_EMBEDDING_BATCH_SIZE"] = os.getenv("GITNEXUS_EMBEDDING_BATCH_SIZE", "32")
+            env["GITNEXUS_EMBEDDING_BATCH_SIZE"] = os.getenv("GITNEXUS_EMBEDDING_BATCH_SIZE", "1")
             env["GITNEXUS_ALLOW_REMOTE_MODELS"] = os.getenv("GITNEXUS_ALLOW_REMOTE_MODELS", "false")
 
             if os.getenv("GITNEXUS_EMBEDDING_DEVICE"):

@@ -54,7 +54,55 @@ describe('index backup', () => {
       metaPath,
       repoPath: dir,
       probe: async (dbPath) =>
-        dbPath === lbugPath ? { ok: false, error: 'not a valid Lbug database file' } : { ok: true },
+        dbPath.endsWith(path.join('backups', 'latest.tmp', 'lbug')) ||
+        dbPath.endsWith('backups\\latest.tmp\\lbug')
+          ? { ok: false, error: 'not a valid Lbug database file' }
+          : { ok: true },
+    });
+
+    expect(result.status).toBe('skipped-invalid-live');
+    await expect(fs.readFile(path.join(dir, 'backups', 'latest', 'lbug'), 'utf-8')).resolves.toBe(
+      'good-live',
+    );
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('backs up from a copied live file without probing the locked live database', async () => {
+    const { dir, lbugPath, metaPath } = await makeRepoStorage();
+    await fs.writeFile(lbugPath, 'locked-live');
+    await fs.writeFile(metaPath, JSON.stringify({ lastCommit: 'locked' }));
+
+    const result = await backupLatestIndex({
+      lbugPath,
+      metaPath,
+      repoPath: dir,
+      probe: async (dbPath) =>
+        dbPath === lbugPath ? { ok: false, error: 'Could not set lock on file' } : { ok: true },
+    });
+
+    expect(result.status).toBe('created');
+    await expect(fs.readFile(path.join(dir, 'backups', 'latest', 'lbug'), 'utf-8')).resolves.toBe(
+      'locked-live',
+    );
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('keeps latest backup when the copied live file fails validation', async () => {
+    const { dir, lbugPath, metaPath } = await makeRepoStorage();
+    await fs.writeFile(lbugPath, 'good-live');
+    await fs.writeFile(metaPath, JSON.stringify({ lastCommit: 'good' }));
+    await backupLatestIndex({ lbugPath, metaPath, repoPath: dir, probe: okProbe });
+
+    await fs.writeFile(lbugPath, 'busy-or-corrupt-live');
+    const result = await backupLatestIndex({
+      lbugPath,
+      metaPath,
+      repoPath: dir,
+      probe: async (dbPath) =>
+        dbPath.endsWith(path.join('backups', 'latest.tmp', 'lbug')) ||
+        dbPath.endsWith('backups\\latest.tmp\\lbug')
+          ? { ok: false, error: 'Unable to open database' }
+          : { ok: true },
     });
 
     expect(result.status).toBe('skipped-invalid-live');

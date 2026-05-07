@@ -3,10 +3,33 @@ import {
   processProcesses,
   type ProcessDetectionConfig,
 } from '../../src/core/ingestion/process-processor.js';
+import {
+  calculateDynamicMaxProcesses,
+  getMaxProcessesCap,
+} from '../../src/core/ingestion/pipeline-phases/processes.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { CommunityMembership } from '../../src/core/ingestion/community-processor.js';
 
 describe('processProcesses', () => {
+  it('uses a configurable dynamic process cap', () => {
+    const previous = process.env.GITNEXUS_MAX_PROCESSES;
+    try {
+      delete process.env.GITNEXUS_MAX_PROCESSES;
+      expect(getMaxProcessesCap()).toBe(300);
+      expect(calculateDynamicMaxProcesses(20_000)).toBe(300);
+
+      process.env.GITNEXUS_MAX_PROCESSES = '1000';
+      expect(getMaxProcessesCap()).toBe(1000);
+      expect(calculateDynamicMaxProcesses(20_000)).toBe(1000);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.GITNEXUS_MAX_PROCESSES;
+      } else {
+        process.env.GITNEXUS_MAX_PROCESSES = previous;
+      }
+    }
+  });
+
   it('detects no processes in empty graph', async () => {
     const graph = createKnowledgeGraph();
     const result = await processProcesses(graph, []);

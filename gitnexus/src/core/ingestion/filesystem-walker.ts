@@ -22,8 +22,13 @@ export interface FilePath {
 
 const READ_CONCURRENCY = 32;
 
-/** Skip files larger than 512KB — they're usually generated/vendored and crash tree-sitter */
-const MAX_FILE_SIZE = 512 * 1024;
+/** Skip files larger than this — they're usually generated/vendored and crash tree-sitter */
+const DEFAULT_MAX_FILE_SIZE = 512 * 1024;
+
+export function getMaxFileSizeBytes(): number {
+  const parsed = Number.parseInt(process.env.GITNEXUS_MAX_FILE_SIZE_BYTES ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_FILE_SIZE;
+}
 
 /**
  * Phase 1: Scan repository — stat files to get paths + sizes, no content loaded.
@@ -45,6 +50,7 @@ export const walkRepositoryPaths = async (
   let processed = 0;
   let skippedLarge = 0;
   const skippedLargePaths: string[] = [];
+  const maxFileSize = getMaxFileSizeBytes();
 
   for (let start = 0; start < filtered.length; start += READ_CONCURRENCY) {
     const batch = filtered.slice(start, start + READ_CONCURRENCY);
@@ -52,7 +58,7 @@ export const walkRepositoryPaths = async (
       batch.map(async (relativePath) => {
         const fullPath = path.join(repoPath, relativePath);
         const stat = await fs.stat(fullPath);
-        if (stat.size > MAX_FILE_SIZE) {
+        if (stat.size > maxFileSize) {
           skippedLarge++;
           skippedLargePaths.push(relativePath.replace(/\\/g, '/'));
           return null;
@@ -74,7 +80,7 @@ export const walkRepositoryPaths = async (
 
   if (skippedLarge > 0) {
     console.warn(
-      `  Skipped ${skippedLarge} large files (>${MAX_FILE_SIZE / 1024}KB, likely generated/vendored)`,
+      `  Skipped ${skippedLarge} large files (>${maxFileSize / 1024}KB, likely generated/vendored)`,
     );
     if (isVerboseIngestionEnabled()) {
       for (const p of skippedLargePaths) {
