@@ -16,7 +16,7 @@ export interface ZoektConfig {
 }
 
 export function loadZoektConfig(): ZoektConfig {
-  const raw = process.env.ZOEKT_ENDPOINTS || (process.env.ZOEKT_URL ? process.env.ZOEKT_URL : '');
+  const raw = process.env.ZOEKT_ENDPOINTS ?? process.env.ZOEKT_URL ?? '';
   const endpoints = raw
     .split(',')
     .map((s) => s.trim())
@@ -84,7 +84,6 @@ interface ZoektApiLineMatch {
   Line: string;
   LineNumber: number;
   LineFragments: ZoektApiLineFragment[];
-  FileName?: boolean;
 }
 
 interface ZoektApiFileMatch {

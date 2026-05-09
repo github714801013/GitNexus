@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ZoektClient, loadZoektConfig } from '../../src/core/search/zoekt-client.js';
 
 // Mock global fetch
@@ -20,9 +20,12 @@ function makeApiResponse(files: any[], stats?: any) {
 }
 
 describe('loadZoektConfig', () => {
-  it('默认回退到 localhost:6070', () => {
+  afterEach(() => {
     delete process.env.ZOEKT_ENDPOINTS;
     delete process.env.ZOEKT_URL;
+  });
+
+  it('默认回退到 localhost:6070', () => {
     const cfg = loadZoektConfig();
     expect(cfg.endpoints).toEqual(['http://localhost:6070']);
   });
@@ -31,15 +34,12 @@ describe('loadZoektConfig', () => {
     process.env.ZOEKT_ENDPOINTS = 'http://a:6070,http://b:6070';
     const cfg = loadZoektConfig();
     expect(cfg.endpoints).toEqual(['http://a:6070', 'http://b:6070']);
-    delete process.env.ZOEKT_ENDPOINTS;
   });
 
   it('从 ZOEKT_URL 读取单个端点', () => {
-    delete process.env.ZOEKT_ENDPOINTS;
     process.env.ZOEKT_URL = 'http://remote:6070';
     const cfg = loadZoektConfig();
     expect(cfg.endpoints).toEqual(['http://remote:6070']);
-    delete process.env.ZOEKT_URL;
   });
 });
 
@@ -94,6 +94,30 @@ describe('ZoektClient.search', () => {
     mockFetch.mockRejectedValueOnce(new Error('connection refused'));
 
     const client = new ZoektClient({ endpoints: ['http://dead:6070'] });
+    const result = await client.search('anything');
+    expect(result.matches).toHaveLength(0);
+  });
+
+  it('HTTP 非 2xx 响应时静默返回空结果', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
+
+    const client = new ZoektClient({ endpoints: ['http://localhost:6070'] });
+    const result = await client.search('anything');
+    expect(result.matches).toHaveLength(0);
+  });
+
+  it('Result.Files 为 null 时返回空 matches', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        Result: {
+          Files: null,
+          Stats: { FilesConsidered: 0, FilesLoaded: 0, MatchCount: 0, Duration: 0 },
+        },
+      }),
+    });
+
+    const client = new ZoektClient({ endpoints: ['http://localhost:6070'] });
     const result = await client.search('anything');
     expect(result.matches).toHaveLength(0);
   });
