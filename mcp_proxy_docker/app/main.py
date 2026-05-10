@@ -27,13 +27,17 @@ def get_deferred_retry_delay():
     return int(os.getenv("GITNEXUS_DEFERRED_ANALYZE_RETRY_SECONDS", "60"))
 
 def _touch_zoekt_trigger(repo_path: str) -> None:
-    """在仓库目录写入触发文件，通知 zoekt-indexserver 对该仓库重新索引。"""
-    trigger = os.path.join(repo_path, ".zoekt-reindex")
+    """在共享触发目录写入触发文件，通知 zoekt-indexserver 对该仓库重新索引。"""
+    trigger_dir = os.getenv("ZOEKT_TRIGGER_DIR", "/data/zoekt-index/triggers")
+    projects_root = get_projects_root()
+    repo_name = os.path.relpath(repo_path, projects_root).replace(os.sep, "/")
+    trigger_file = os.path.join(trigger_dir, repo_name.replace("/", "_") + ".reindex")
     try:
-        with open(trigger, "w") as f:
+        os.makedirs(trigger_dir, exist_ok=True)
+        with open(trigger_file, "w") as f:
             f.write("")
     except Exception as e:
-        logger.debug(f"Failed to write zoekt trigger for {repo_path}: {e}")
+        logger.debug(f"Failed to write zoekt trigger for {repo_name}: {e}")
 
 _concurrency = get_indexing_concurrency()
 _analyze_semaphore: asyncio.Semaphore = asyncio.Semaphore(_concurrency)

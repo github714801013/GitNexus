@@ -4,20 +4,21 @@ services:
     image: sourcegraph/zoekt-indexserver:latest
     container_name: zoekt-indexserver
     volumes:
-      - /home/ji99/gitnexus:/repos
+      - /home/ji99/gitnexus:/repos:ro
       - zoekt-index:/data/index
     entrypoint:
       - sh
       - -c
       - |
         INDEX_DIR=/data/index
+        TRIGGER_DIR=/data/index/triggers
         REPOS_DIR=/repos
+        mkdir -p "$$TRIGGER_DIR"
 
         index_repo() {
           repo_dir="$$1"
           repo_name=$$(echo "$$repo_dir" | sed "s|$${REPOS_DIR}/||")
           zoekt-git-index -index "$$INDEX_DIR" -name "$$repo_name" "$$repo_dir" 2>/dev/null || true
-          rm -f "$$repo_dir/.zoekt-reindex"
         }
 
         # 启动时全量索引
@@ -25,14 +26,15 @@ services:
           index_repo "$$(dirname $$(dirname "$$h"))"
         done
 
-        # 持续监听触发文件，同时每 30 分钟全量扫描一次
-        last_full=0
+        # 持续监听触发文件，每 30 分钟兜底全量扫描
+        last_full=$$(date +%s)
         while true; do
-          # 检查触发文件
-          find "$$REPOS_DIR" -maxdepth 3 -name ".zoekt-reindex" | while read t; do
-            index_repo "$$(dirname "$$t")"
+          find "$$TRIGGER_DIR" -maxdepth 1 -name "*.reindex" | while read t; do
+            repo_name=$$(basename "$$t" .reindex | tr '_' '/')
+            repo_dir="$$REPOS_DIR/$$repo_name"
+            rm -f "$$t"
+            [ -d "$$repo_dir/.git" ] && index_repo "$$repo_dir"
           done
-          # 每 1800 秒全量扫描
           now=$$(date +%s)
           if [ $$((now - last_full)) -ge 1800 ]; then
             find "$$REPOS_DIR" -maxdepth 3 -name HEAD -path "*/.git/HEAD" | while read h; do
@@ -70,6 +72,7 @@ services:
       - /home/ji99/Project/mcp_gitnexus_server/models:/app/models
       - /home/ji99/.gitnexus:/root/.gitnexus
       - /home/ji99/.lbdb:/root/.lbdb
+      - zoekt-index:/data/zoekt-index
     environment:
       - GITEA_TOKEN=${GITEA_TOKEN}
       - INDEXING_CONCURRENCY=3
@@ -85,6 +88,7 @@ services:
       - GITNEXUS_EMBEDDING_LIMIT=20000000
       - GITNEXUS_ALLOW_REMOTE_MODELS=true
       - ZOEKT_ENDPOINTS=http://zoekt-webserver:6070
+      - ZOEKT_TRIGGER_DIR=/data/zoekt-index/triggers
     depends_on:
       - zoekt-webserver
     stop_grace_period: 5m
