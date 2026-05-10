@@ -34,8 +34,6 @@ export interface ZoektSearchOpts {
   maxDocDisplayCount?: number;
   /** 每个匹配行前后的上下文行数，默认 2 */
   numContextLines?: number;
-  /** 最大等待时间（秒字符串），默认 "5s" */
-  maxWallTime?: string;
   /** 仅在指定仓库内搜索（Zoekt repo 名称） */
   repoFilter?: string;
 }
@@ -182,7 +180,6 @@ export class ZoektClient {
       Opts: {
         MaxDocDisplayCount: opts.maxDocDisplayCount ?? 50,
         NumContextLines: opts.numContextLines ?? 2,
-        MaxWallTime: opts.maxWallTime ?? '5s',
       },
     });
 
