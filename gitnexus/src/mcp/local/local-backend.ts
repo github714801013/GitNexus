@@ -708,6 +708,10 @@ export class LocalBackend {
         return this.toolMap(repo, params);
       case 'api_impact':
         return this.apiImpact(repo, params);
+      case 'zoekt_search':
+        return this.zoektSearch(params);
+      case 'zoekt_symbol':
+        return this.zoektSymbol(params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -3799,6 +3803,62 @@ export class LocalBackend {
         filePath: s.filePath || s[2],
       })),
     };
+  }
+
+  private async zoektSearch(params: {
+    query: string;
+    repo?: string;
+    regex?: boolean;
+    case_sensitive?: boolean;
+    max_results?: number;
+    context_lines?: number;
+  }): Promise<string> {
+    const { ZoektClient, loadZoektConfig } = await import('../../core/search/zoekt-client.js');
+    const client = new ZoektClient(loadZoektConfig());
+    let q = params.query;
+    if (params.regex) q = `r:${q}`;
+    if (params.case_sensitive) q = `case:yes ${q}`;
+    const result = await client.search(q, {
+      repoFilter: params.repo,
+      maxDocDisplayCount: params.max_results ?? 50,
+      numContextLines: params.context_lines ?? 2,
+    });
+    return this.formatZoektResult(result);
+  }
+
+  private async zoektSymbol(params: {
+    symbol: string;
+    kind?: string;
+    repo?: string;
+    max_results?: number;
+  }): Promise<string> {
+    const { ZoektClient, loadZoektConfig } = await import('../../core/search/zoekt-client.js');
+    const client = new ZoektClient(loadZoektConfig());
+    const result = await client.symbolSearch(params.symbol, params.kind ?? 'all', {
+      repoFilter: params.repo,
+      maxDocDisplayCount: params.max_results ?? 50,
+    });
+    return this.formatZoektResult(result);
+  }
+
+  private formatZoektResult(
+    result: import('../../core/search/zoekt-client.js').ZoektSearchResult,
+  ): string {
+    if (result.matches.length === 0) {
+      return `No matches found. Stats: ${result.stats.matchCount} matches considered in ${result.stats.durationMs}ms.`;
+    }
+    const lines: string[] = [
+      `Found ${result.matches.length} file(s) — ${result.stats.matchCount} match(es) in ${result.stats.durationMs}ms\n`,
+    ];
+    for (const m of result.matches) {
+      lines.push(`## ${m.repository} · ${m.fileName} (score: ${m.score.toFixed(2)})`);
+      for (const lm of m.lineMatches) {
+        const prefix = lm.isContext ? '  ' : '> ';
+        lines.push(`${prefix}L${lm.lineNumber}: ${lm.line}`);
+      }
+      lines.push('');
+    }
+    return lines.join('\n');
   }
 
   async disconnect(): Promise<void> {

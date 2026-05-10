@@ -508,4 +508,53 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
       required: ['name'],
     },
   },
+  {
+    name: 'zoekt_search',
+    description: `Full-text and regex search across indexed repositories using Zoekt.
+
+WHEN TO USE: Finding code by content — literal strings, regex patterns, or language-filtered searches. Faster and more precise than semantic search for exact matches.
+
+Supports Zoekt query syntax:
+  - Literal: \`handleError\`
+  - Regex (set regex:true): \`func\\s+\\w+Error\`
+  - Language filter: \`lang:typescript handleError\`
+  - File filter: \`file:*.test.ts\`
+
+Configure endpoints via ZOEKT_ENDPOINTS (comma-separated) or ZOEKT_URL env vars.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query (Zoekt syntax)' },
+        repo: { type: 'string', description: 'Restrict search to this Zoekt repo name' },
+        regex: { type: 'boolean', description: 'Treat query as regex (prepends r: prefix)' },
+        case_sensitive: { type: 'boolean', description: 'Case-sensitive search' },
+        max_results: { type: 'number', description: 'Max file matches to return (default 50)' },
+        context_lines: {
+          type: 'number',
+          description: 'Context lines around each match (default 2)',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'zoekt_symbol',
+    description: `Precise symbol search (functions, classes, methods, interfaces) using Zoekt ctags index.
+
+WHEN TO USE: Finding where a specific symbol is defined — more precise than full-text search for symbol names.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol name to search for' },
+        kind: {
+          type: 'string',
+          enum: ['function', 'class', 'method', 'interface', 'all'],
+          description: 'Symbol kind filter (default: all)',
+        },
+        repo: { type: 'string', description: 'Restrict search to this Zoekt repo name' },
+        max_results: { type: 'number', description: 'Max file matches to return (default 50)' },
+      },
+      required: ['symbol'],
+    },
+  },
 ];

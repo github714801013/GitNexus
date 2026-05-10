@@ -61,6 +61,12 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
     case 'rename':
       return `\n\n---\n**Next:** Run detect_changes(${repoParam ? `{repo: "${repo}"}` : ''}) to verify no unexpected side effects from the rename.`;
 
+    case 'zoekt_search':
+      return `\n\n---\n**Next:** To understand a symbol found in results, use context({name: "<symbol_name>"${repoParam}}) for callers, callees, and process participation.`;
+
+    case 'zoekt_symbol':
+      return `\n\n---\n**Next:** Use context({name: "${args?.symbol || '<symbol>'}"${repoParam}}) for a 360-degree view of the symbol's relationships and execution flows.`;
+
     case 'cypher':
       return `\n\n---\n**Next:** To explore a result symbol, use context({name: "<name>"${repoParam}}). For schema reference, READ gitnexus://repo/${repoPath}/schema.`;
 
