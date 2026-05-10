@@ -175,13 +175,14 @@ export class ZoektClient {
     opts: ZoektSearchOpts,
   ): Promise<ZoektSearchResult> {
     const url = `${endpoint.replace(/\/$/, '')}/api/search`;
+    // repo 过滤通过查询语法 `repo:xxx` 实现，Restrict 字段无效
+    const q = opts.repoFilter ? `repo:${opts.repoFilter} ${query}` : query;
     const body = JSON.stringify({
-      Q: query,
+      Q: q,
       Opts: {
         MaxDocDisplayCount: opts.maxDocDisplayCount ?? 50,
         NumContextLines: opts.numContextLines ?? 2,
         MaxWallTime: opts.maxWallTime ?? '5s',
-        ...(opts.repoFilter ? { Restrict: [opts.repoFilter] } : {}),
       },
     });
 
