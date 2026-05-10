@@ -514,6 +514,8 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
 
 WHEN TO USE: Finding code by content — literal strings, regex patterns, or language-filtered searches. Faster and more precise than semantic search for exact matches.
 
+**repo is OPTIONAL** — omit it to search ALL indexed repos at once. Only set repo when you want to restrict results to a specific repository.
+
 Supports Zoekt query syntax:
   - Literal: \`handleError\`
   - Regex (set regex:true): \`func\\s+\\w+Error\`
@@ -544,7 +546,9 @@ Configure endpoints via ZOEKT_ENDPOINTS (comma-separated) or ZOEKT_URL env vars.
     name: 'zoekt_symbol',
     description: `Precise symbol search (functions, classes, methods, interfaces) using Zoekt ctags index.
 
-WHEN TO USE: Finding where a specific symbol is defined — more precise than full-text search for symbol names.`,
+WHEN TO USE: Finding where a specific symbol is defined — more precise than full-text search for symbol names.
+
+**repo is OPTIONAL** — omit it to search ALL indexed repos at once. Only set repo when you want to restrict results to a specific repository.`,
     inputSchema: {
       type: 'object',
       properties: {
