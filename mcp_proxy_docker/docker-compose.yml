@@ -22,7 +22,7 @@ services:
         }
 
         # 启动时全量索引
-        find "$$REPOS_DIR" -maxdepth 3 -name HEAD -path "*/.git/HEAD" | while read h; do
+        find "$$REPOS_DIR" -maxdepth 4 -name HEAD -path "*/.git/HEAD" | while read h; do
           index_repo "$$(dirname $$(dirname "$$h"))"
         done
 
@@ -37,7 +37,7 @@ services:
           done
           now=$$(date +%s)
           if [ $$((now - last_full)) -ge 1800 ]; then
-            find "$$REPOS_DIR" -maxdepth 3 -name HEAD -path "*/.git/HEAD" | while read h; do
+            find "$$REPOS_DIR" -maxdepth 4 -name HEAD -path "*/.git/HEAD" | while read h; do
               index_repo "$$(dirname $$(dirname "$$h"))"
             done
             last_full=$$now
