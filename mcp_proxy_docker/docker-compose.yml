@@ -17,8 +17,7 @@ services:
 
         index_repo() {
           repo_dir="$$1"
-          repo_name=$$(echo "$$repo_dir" | sed "s|$${REPOS_DIR}/||")
-          zoekt-git-index -index "$$INDEX_DIR" -name "$$repo_name" "$$repo_dir" 2>/dev/null || true
+          zoekt-git-index -index "$$INDEX_DIR" "$$repo_dir" 2>/dev/null || true
         }
 
         # 启动时全量索引
