@@ -217,7 +217,7 @@ export class ZoektClient {
       branches: f.Branches ?? [],
       score: f.Score ?? 0,
       lineMatches: (f.LineMatches ?? []).map((lm) => ({
-        line: lm.Line,
+        line: Buffer.from(lm.Line, 'base64').toString('utf8').trimEnd(),
         lineNumber: lm.LineNumber,
         lineFragments: (lm.LineFragments ?? []).map((frag) => ({
           lineOffset: frag.LineOffset,
