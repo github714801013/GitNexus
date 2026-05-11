@@ -67,6 +67,7 @@ services:
   zoekt-webserver:
     image: sourcegraph/zoekt-webserver:latest
     container_name: zoekt-webserver
+    command: ['zoekt-webserver', '-listen', ':6070', '-index', '/data/index', '-rpc', '-html']
     ports:
       - '6070:6070'
     volumes:

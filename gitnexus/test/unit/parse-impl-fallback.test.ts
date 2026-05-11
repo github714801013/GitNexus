@@ -86,6 +86,26 @@ vi.mock('../../src/core/ingestion/ast-cache.js', async (importOriginal) => {
   };
 });
 
+const workerPoolSpies = {
+  createWorkerPoolCalls: 0,
+  resetSpies() {
+    this.createWorkerPoolCalls = 0;
+  },
+};
+
+vi.mock('../../src/core/ingestion/workers/worker-pool.js', async () => {
+  return {
+    createWorkerPool: () => {
+      workerPoolSpies.createWorkerPoolCalls += 1;
+      return {
+        size: 1,
+        dispatch: async () => [],
+        terminate: async () => {},
+      };
+    },
+  };
+});
+
 // Import after the mocks so bindings reference the wrapped versions.
 const { runChunkedParseAndResolve } =
   await import('../../src/core/ingestion/pipeline-phases/parse-impl.js');
@@ -113,6 +133,7 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
 
   beforeEach(() => {
     spies.resetSpies();
+    workerPoolSpies.resetSpies();
     failureConfig.readFileContentsFailAfter = Infinity;
     failureConfig.readFileContentsCalls = 0;
     failureConfig.processCalls = false;
@@ -200,5 +221,32 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
 
     // astCache.clear() must have run in the finally block.
     expect(spies.astCacheClearCalls).toBeGreaterThan(clearsBefore);
+  });
+
+  it('keeps C# repos on the sequential path to avoid native parser worker crashes', async () => {
+    const graph = createKnowledgeGraph();
+    const files = Array.from({ length: 16 }, (_, i) => `src/File${i}.cs`);
+    repoPath = makeTempRepo(
+      Object.fromEntries(
+        files.map((file, i) => [
+          file,
+          `namespace Demo { public class File${i} { public int Value() { return ${i}; } } }\n`,
+        ]),
+      ),
+    );
+
+    const result = await runChunkedParseAndResolve(
+      graph,
+      scanned(repoPath, files),
+      files,
+      files.length,
+      repoPath,
+      Date.now(),
+      () => {},
+      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+    );
+
+    expect(result.usedWorkerPool).toBe(false);
+    expect(workerPoolSpies.createWorkerPoolCalls).toBe(0);
   });
 });

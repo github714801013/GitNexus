@@ -106,6 +106,26 @@ describe('ZoektClient.search', () => {
     expect(result.matches).toHaveLength(0);
   });
 
+  it('HTTP 非 2xx 响应时在 warning 中包含响应正文', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: async () => 'JSON API requires -rpc',
+    });
+
+    const client = new ZoektClient({ endpoints: ['http://localhost:6070'] });
+    const result = await client.search('anything');
+
+    expect(result.matches).toHaveLength(0);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'HTTP 400 from http://localhost:6070/api/search: JSON API requires -rpc',
+      ),
+    );
+    warnSpy.mockRestore();
+  });
+
   it('Result.Files 为 null 时返回空 matches', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -120,6 +140,30 @@ describe('ZoektClient.search', () => {
     const client = new ZoektClient({ endpoints: ['http://localhost:6070'] });
     const result = await client.search('anything');
     expect(result.matches).toHaveLength(0);
+  });
+
+  it('兼容 Zoekt JSON API 将统计字段直接放在 Result 下的响应', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        Result: {
+          FilesConsidered: 12,
+          FilesLoaded: 3,
+          MatchCount: 7,
+          Duration: 2_000_000,
+          Files: [],
+        },
+      }),
+    });
+
+    const client = new ZoektClient({ endpoints: ['http://localhost:6070'] });
+    const result = await client.search('anything');
+    expect(result.stats).toEqual({
+      filesConsidered: 12,
+      filesLoaded: 3,
+      matchCount: 7,
+      durationMs: 2,
+    });
   });
 
   it('多端点并发查询并去重（保留 score 最高的）', async () => {

@@ -100,9 +100,9 @@ interface ZoektApiStats {
 }
 
 interface ZoektApiResponse {
-  Result: {
+  Result: ZoektApiStats & {
     Files: ZoektApiFileMatch[] | null;
-    Stats: ZoektApiStats;
+    Stats?: ZoektApiStats;
   };
 }
 
@@ -199,17 +199,26 @@ export class ZoektClient {
     }
 
     if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status} from ${url}`);
+      const detail = await this.readErrorBody(resp);
+      throw new Error(`HTTP ${resp.status} from ${url}${detail ? `: ${detail}` : ''}`);
     }
 
     const json = (await resp.json()) as ZoektApiResponse;
     return this.parseApiResponse(json);
   }
 
+  private async readErrorBody(resp: Response): Promise<string> {
+    try {
+      return (await resp.text()).trim();
+    } catch {
+      return '';
+    }
+  }
+
   /** 将 Zoekt API 原始响应转换为内部类型 */
   private parseApiResponse(json: ZoektApiResponse): ZoektSearchResult {
     const files = json.Result?.Files ?? [];
-    const stats = json.Result?.Stats;
+    const stats = json.Result?.Stats ?? json.Result;
 
     const matches: ZoektFileMatch[] = files.map((f) => ({
       repository: f.Repository,

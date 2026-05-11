@@ -42,7 +42,11 @@ import {
 } from '../heritage-processor.js';
 import { createResolutionContext } from '../model/resolution-context.js';
 import { ASTCache, createASTCache } from '../ast-cache.js';
-import { type PipelineProgress, getLanguageFromFilename } from 'gitnexus-shared';
+import {
+  type PipelineProgress,
+  getLanguageFromFilename,
+  SupportedLanguages,
+} from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
 import { createWorkerPool } from '../workers/worker-pool.js';
@@ -192,8 +196,13 @@ export async function runChunkedParseAndResolve(
 
   // Create worker pool once, reuse across chunks
   let workerPool: WorkerPool | undefined;
+  const containsCSharp = parseableScanned.some(
+    (file) => getLanguageFromFilename(file.path) === SupportedLanguages.CSharp,
+  );
+
   if (
     !options?.skipWorkers &&
+    !containsCSharp &&
     (totalParseable >= MIN_FILES_FOR_WORKERS || totalBytes >= MIN_BYTES_FOR_WORKERS)
   ) {
     try {
