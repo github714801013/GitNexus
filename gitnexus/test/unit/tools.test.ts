@@ -13,8 +13,8 @@ import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 const GROUP_TOOLS = new Set(['group_list', 'group_sync']);
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 2 group)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(13);
+  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 2 group + 2 zoekt + code_snippet)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(16);
   });
 
   it('contains all expected tool names', () => {
@@ -29,6 +29,7 @@ describe('GITNEXUS_TOOLS', () => {
         'rename',
         'impact',
         'api_impact',
+        'code_snippet',
       ]),
     );
   });
@@ -133,6 +134,16 @@ describe('GITNEXUS_TOOLS', () => {
     expect(apiImpactTool.inputSchema.properties.route).toBeDefined();
     expect(apiImpactTool.inputSchema.properties.file).toBeDefined();
     expect(apiImpactTool.inputSchema.properties.repo).toBeDefined();
+  });
+
+  it('code_snippet requires filePath and line range', () => {
+    const tool = GITNEXUS_TOOLS.find((t) => t.name === 'code_snippet')!;
+    expect(tool).toBeDefined();
+    expect(tool.inputSchema.required).toEqual(['filePath', 'startLine', 'endLine']);
+    expect(tool.inputSchema.properties.repo).toBeDefined();
+    expect(tool.inputSchema.properties.filePath.type).toBe('string');
+    expect(tool.inputSchema.properties.startLine.minimum).toBe(1);
+    expect(tool.inputSchema.properties.endLine.minimum).toBe(1);
   });
 
   it('impact relationTypes is array of strings', () => {

@@ -478,6 +478,39 @@ Returns: single route object when one match, or { routes: [...], total: N } for 
     },
   },
   {
+    name: 'code_snippet',
+    description: `Read a bounded source-code snippet directly from an indexed repository by file path and line range.
+
+WHEN TO USE: After zoekt_search, query, context, or cypher returns a file path and line number, use this to fetch the exact surrounding source without running graph or vector search.
+
+Performance model: resolves the repo from the registry, validates the requested path stays inside the repo root, reads the file directly without repo locks, and retries once on transient filesystem errors. Returned content is capped by file size, line count, and character count.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filePath: {
+          type: 'string',
+          description: 'Repository-relative file path to read.',
+          minLength: 1,
+        },
+        startLine: {
+          type: 'number',
+          description: '1-based start line.',
+          minimum: 1,
+        },
+        endLine: {
+          type: 'number',
+          description: '1-based end line.',
+          minimum: 1,
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: ['filePath', 'startLine', 'endLine'],
+    },
+  },
+  {
     name: 'group_list',
     description: `List all configured repository groups, or return details for one group (repos, manifest links).
 

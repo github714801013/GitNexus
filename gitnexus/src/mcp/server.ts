@@ -62,7 +62,10 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
       return `\n\n---\n**Next:** Run detect_changes(${repoParam ? `{repo: "${repo}"}` : ''}) to verify no unexpected side effects from the rename.`;
 
     case 'zoekt_search':
-      return `\n\n---\n**Next:** To understand a symbol found in results, use context({name: "<symbol_name>"${repoParam}}) for callers, callees, and process participation.`;
+      return `\n\n---\n**Next:** To inspect exact source around a match, use code_snippet({filePath: "<file_path>", startLine: <line>, endLine: <line>${repoParam}}). To understand a symbol, use context({name: "<symbol_name>"${repoParam}}).`;
+
+    case 'code_snippet':
+      return `\n\n---\n**Next:** If you need relationships for this code, use context({name: "<symbol_name>"${repoParam}}) or impact({target: "<symbol_name>", direction: "upstream"${repoParam}}).`;
 
     case 'zoekt_symbol':
       return `\n\n---\n**Next:** Use context({name: "${args?.symbol || '<symbol>'}"${repoParam}}) for a 360-degree view of the symbol's relationships and execution flows.`;

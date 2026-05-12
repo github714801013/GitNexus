@@ -182,6 +182,24 @@ function logQueryTiming(query: string, phases: Record<string, number>): void {
   );
 }
 
+const DEFAULT_CODE_SNIPPET_MAX_LINES = 300;
+const DEFAULT_CODE_SNIPPET_MAX_CHARS = 80_000;
+const DEFAULT_CODE_SNIPPET_RETRY_DELAY_MS = 50;
+
+function envPositiveInt(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function isPathInside(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export interface CodebaseContext {
   projectName: string;
   stats: {
@@ -713,12 +731,93 @@ export class LocalBackend {
         return this.toolMap(repo, params);
       case 'api_impact':
         return this.apiImpact(repo, params);
+      case 'code_snippet':
+        return this.codeSnippet(repo, params);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
   }
 
   // ─── Tool Implementations ────────────────────────────────────────
+
+  private async codeSnippet(
+    repo: RepoHandle,
+    params: {
+      filePath?: string;
+      startLine?: number;
+      endLine?: number;
+    },
+  ): Promise<any> {
+    const filePath = params.filePath?.trim();
+    if (!filePath) throw new Error('filePath parameter is required.');
+
+    const startLine = Math.trunc(Number(params.startLine));
+    const endLine = Math.trunc(Number(params.endLine));
+    if (!Number.isFinite(startLine) || !Number.isFinite(endLine) || startLine < 1 || endLine < 1) {
+      throw new Error('startLine and endLine must be positive 1-based line numbers.');
+    }
+    if (endLine < startLine) throw new Error('endLine must be greater than or equal to startLine.');
+
+    const maxLines = envPositiveInt(
+      'GITNEXUS_CODE_SNIPPET_MAX_LINES',
+      DEFAULT_CODE_SNIPPET_MAX_LINES,
+    );
+    if (endLine - startLine + 1 > maxLines) {
+      throw new Error(`Requested line range exceeds maximum of ${maxLines} lines.`);
+    }
+
+    const repoRoot = path.resolve(repo.repoPath);
+    const targetPath = path.resolve(repoRoot, filePath);
+    if (targetPath === repoRoot || !isPathInside(repoRoot, targetPath)) {
+      throw new Error(`Requested filePath is outside repository root: ${filePath}`);
+    }
+
+    const maxFileBytes = envPositiveInt(
+      'GITNEXUS_CODE_SNIPPET_MAX_FILE_SIZE_BYTES',
+      envPositiveInt('GITNEXUS_MAX_FILE_SIZE_BYTES', 5 * 1024 * 1024),
+    );
+    const maxChars = envPositiveInt(
+      'GITNEXUS_CODE_SNIPPET_MAX_CHARS',
+      DEFAULT_CODE_SNIPPET_MAX_CHARS,
+    );
+
+    const readOnce = async () => {
+      const stat = await fs.stat(targetPath);
+      if (!stat.isFile()) throw new Error(`filePath is not a file: ${filePath}`);
+      if (stat.size > maxFileBytes) {
+        throw new Error(`File exceeds maximum readable size of ${maxFileBytes} bytes: ${filePath}`);
+      }
+      return fs.readFile(targetPath, 'utf-8');
+    };
+
+    let raw: string;
+    try {
+      raw = await readOnce();
+    } catch (err: any) {
+      if (!['ENOENT', 'EBUSY', 'EAGAIN', 'EPERM'].includes(err?.code)) throw err;
+      await sleep(DEFAULT_CODE_SNIPPET_RETRY_DELAY_MS);
+      raw = await readOnce();
+    }
+
+    const lines = raw.split(/\r?\n/);
+    const selected = lines.slice(startLine - 1, endLine);
+    let content = selected.join('\n');
+    const truncated = content.length > maxChars;
+    if (truncated) content = content.slice(0, maxChars);
+
+    return {
+      repo: repo.name,
+      commit: repo.lastCommit,
+      filePath,
+      startLine,
+      endLine,
+      actualStartLine: selected.length > 0 ? startLine : null,
+      actualEndLine: selected.length > 0 ? startLine + selected.length - 1 : null,
+      totalLines: lines.length,
+      truncated,
+      content,
+    };
+  }
 
   /**
    * Query tool — process-grouped search.
