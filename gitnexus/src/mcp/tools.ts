@@ -554,6 +554,13 @@ Supports Zoekt query syntax:
   - Regex (set regex:true): \`func\\s+\\w+Error\`
   - Language filter: \`lang:typescript handleError\`
   - File filter: \`file:*.test.ts\`
+  - Symbol filter: \`sym:MyClass\`
+
+Query-writing notes:
+  - If the repo parameter is set, do not also put \`repo:<name>\` in query; the tool adds the repo filter.
+  - Avoid pasting partially quoted code such as \`"@PostMapping(\\"/register\`; unmatched quotes or parentheses can be parsed as Zoekt syntax and return HTTP 400/zero results.
+  - For Java/Spring annotations, prefer stable tokens such as \`PostMapping /register\` or search the path first with \`/register\`, then inspect the returned lines.
+  - To search an exact string that includes quotes or parentheses, use a complete, balanced query or fall back to simpler tokens instead of escaped partial fragments.
 
 Configure endpoints via ZOEKT_ENDPOINTS (comma-separated) or ZOEKT_URL env vars.`,
     inputSchema: {
