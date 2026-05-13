@@ -27,6 +27,10 @@ export function loadZoektConfig(): ZoektConfig {
   };
 }
 
+function escapeZoektRepoRegex(repo: string): string {
+  return repo.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+}
+
 // ─── 请求 / 响应类型 ──────────────────────────────────────────────────────────
 
 export interface ZoektSearchOpts {
@@ -173,8 +177,11 @@ export class ZoektClient {
     opts: ZoektSearchOpts,
   ): Promise<ZoektSearchResult> {
     const url = `${endpoint.replace(/\/$/, '')}/api/search`;
-    // repo 过滤通过查询语法 `repo:xxx` 实现，Restrict 字段无效
-    const q = opts.repoFilter ? `repo:${opts.repoFilter} ${query}` : query;
+    // repo 过滤通过查询语法实现；按完整仓库名或路径段后缀精确匹配，避免 jiuji-m 命中 jiuji-mp。
+    const repoQuery = opts.repoFilter
+      ? `repo:(^|/)${escapeZoektRepoRegex(opts.repoFilter)}$`
+      : undefined;
+    const q = repoQuery ? `${repoQuery} ${query}` : query;
     const body = JSON.stringify({
       Q: q,
       Opts: {

@@ -360,9 +360,9 @@ async function doInitLbug(
   // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
   let shared = dbCache.get(dbPath);
   if (!shared) {
-    // 保持读写打开是因为扩展加载可能需要锁；
-    // 查询路径会拦截 CREATE_FTS_INDEX，避免写 live DB。
-    // 与 analyze 并发时的锁冲突由下面的重试逻辑处理。
+    // 查询池不能用可写句柄打开 live DB：serve、MCP 和后台 embedding
+    // 可能位于不同进程。只读打开允许查询复用已构建索引，并让 rebuild/embedding
+    // 成为唯一持有文件写锁的流程。
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
       silenceStdout();
@@ -371,7 +371,7 @@ async function doInitLbug(
           dbPath,
           0, // bufferManagerSize (default)
           false, // enableCompression (default)
-          false, // readOnly=false: 扩展加载可能需要锁
+          true, // readOnly=true：查询池不竞争 writer lock
         );
         restoreStdout();
         shared = { db, refCount: 0, ftsLoaded: false, vectorLoaded: false };

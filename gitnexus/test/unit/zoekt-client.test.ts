@@ -193,6 +193,19 @@ describe('ZoektClient.search', () => {
     expect(result.matches).toHaveLength(1);
     expect(result.matches[0].score).toBe(2.0);
   });
+
+  it('repoFilter 使用路径段后缀精确匹配，避免 jiuji-m 命中 jiuji-mp', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => makeApiResponse([]),
+    });
+
+    const client = new ZoektClient({ endpoints: ['http://localhost:6070'] });
+    await client.search('package.json', { repoFilter: 'jiuji-m' });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.Q).toBe('repo:(^|/)jiuji-m$ package.json');
+  });
 });
 
 describe('ZoektClient.symbolSearch', () => {
