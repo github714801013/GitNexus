@@ -47,10 +47,10 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
       return `\n\n---\n**Next:** READ gitnexus://repo/{name}/context for any repo above to get its overview and check staleness.`;
 
     case 'query':
-      return `\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.`;
+      return `\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation before reading source files.`;
 
     case 'context':
-      return `\n\n---\n**Next:** If planning changes, use impact({target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
+      return `\n\n---\n**Next:** If planning changes, use impact({target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. If exact implementation is still needed, use code_snippet for a small line range around the definition.`;
 
     case 'impact':
       return `\n\n---\n**Next:** Review d=1 items first (WILL BREAK). To check affected execution flows, READ gitnexus://repo/${repoPath}/processes.`;
@@ -62,7 +62,7 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
       return `\n\n---\n**Next:** Run detect_changes(${repoParam ? `{repo: "${repo}"}` : ''}) to verify no unexpected side effects from the rename.`;
 
     case 'zoekt_search':
-      return `\n\n---\n**Next:** To inspect exact source around a match, use code_snippet({filePath: "<file_path>", startLine: <line>, endLine: <line>${repoParam}}). To understand a symbol, use context({name: "<symbol_name>"${repoParam}}).`;
+      return `\n\n---\n**Next:** If the match names a symbol, use context({name: "<symbol_name>"${repoParam}}) before reading source. To verify exact lines, use code_snippet({filePath: "<file_path>", startLine: <line>, endLine: <line>${repoParam}}) with a small range.`;
 
     case 'code_snippet':
       return `\n\n---\n**Next:** If you need relationships for this code, use context({name: "<symbol_name>"${repoParam}}) or impact({target: "<symbol_name>", direction: "upstream"${repoParam}}).`;

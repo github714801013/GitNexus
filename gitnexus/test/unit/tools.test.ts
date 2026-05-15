@@ -110,6 +110,29 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
+  it('documents graph-first workflow before source snippets', () => {
+    const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
+    const contextTool = GITNEXUS_TOOLS.find((t) => t.name === 'context')!;
+    const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
+    const snippetTool = GITNEXUS_TOOLS.find((t) => t.name === 'code_snippet')!;
+
+    expect(queryTool.description).toContain('GRAPH-FIRST WORKFLOW');
+    expect(queryTool.description).toContain('Do not start by reading large source files');
+    expect(contextTool.description).toContain('call context() before reading its file');
+    expect(impactTool.description).toContain('run impact() to see the blast radius');
+    expect(snippetTool.description).toContain('LOCATE -> VERIFY -> EXPAND');
+    expect(snippetTool.description).toContain('roughly 10-20 relevant lines');
+  });
+
+  it('documents precise Zoekt filters and bounded context lines', () => {
+    const tool = GITNEXUS_TOOLS.find((t) => t.name === 'zoekt_search')!;
+
+    expect(tool.description).toContain('Use it as a precise locator');
+    expect(tool.description).toContain('wxdgTab file:kcServices.cs lang:csharp');
+    expect(tool.description).toContain('Avoid broad keyword-only searches');
+    expect(tool.inputSchema.properties.context_lines.description).toContain('Use 5-10 lines');
+  });
+
   it('group tools without backend repo param omit repo property', () => {
     for (const name of ['group_list', 'group_sync'] as const) {
       const tool = GITNEXUS_TOOLS.find((t) => t.name === name)!;

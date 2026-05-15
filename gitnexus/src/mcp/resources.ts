@@ -333,6 +333,9 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push(`  processes: ${context.stats.processCount}`);
   lines.push('');
   lines.push('tools_available:');
+  lines.push(
+    '  - workflow: Graph-first. Use context/impact/cypher before reading files; use code_snippet only for bounded verification.',
+  );
   lines.push('  - query: Process-grouped code intelligence (execution flows related to a concept)');
   lines.push('  - context: 360-degree symbol view (categorized refs, process participation)');
   lines.push('  - impact: Blast radius analysis (what breaks if you change a symbol)');
@@ -594,6 +597,8 @@ async function getSetupResource(backend: LocalBackend): Promise<string> {
       `# GitNexus MCP — ${repo.name}`,
       '',
       `This project is indexed by GitNexus as **${repo.name}** (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows).`,
+      '',
+      'Use a graph-first workflow: `context` for known symbols, `impact` before changes, `cypher` for structural questions, and `code_snippet` only for bounded line-range verification.',
       '',
       '## Tools',
       '',

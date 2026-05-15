@@ -21,13 +21,31 @@ function makeApiResponse(files: any[], stats?: any) {
 
 describe('loadZoektConfig', () => {
   afterEach(() => {
+    delete process.env.ZOEKT_ENABLED;
     delete process.env.ZOEKT_ENDPOINTS;
     delete process.env.ZOEKT_URL;
   });
 
-  it('默认回退到 localhost:6070', () => {
+  it('默认回退到 localhost:6070 且处于禁用状态（若无环境变量）', () => {
+    delete process.env.ZOEKT_ENABLED;
+    delete process.env.ZOEKT_ENDPOINTS;
+    delete process.env.ZOEKT_URL;
     const cfg = loadZoektConfig();
     expect(cfg.endpoints).toEqual(['http://localhost:6070']);
+    expect(cfg.enabled).toBe(false);
+  });
+
+  it('显式启用 Zoekt', () => {
+    process.env.ZOEKT_ENABLED = 'true';
+    const cfg = loadZoektConfig();
+    expect(cfg.enabled).toBe(true);
+  });
+
+  it('提供端点时自动启用 Zoekt', () => {
+    process.env.ZOEKT_ENDPOINTS = 'http://remote:6070';
+    const cfg = loadZoektConfig();
+    expect(cfg.enabled).toBe(true);
+    expect(cfg.endpoints).toEqual(['http://remote:6070']);
   });
 
   it('从 ZOEKT_ENDPOINTS 读取多个端点', () => {

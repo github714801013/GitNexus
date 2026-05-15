@@ -675,6 +675,108 @@ export class LocalBackend {
 
   // ─── Tool Dispatch ───────────────────────────────────────────────
 
+  /**
+   * Smart repository discovery for queries without an explicit repo parameter.
+   * Returns up to 'limit' repositories that likely contain the answer.
+   */
+  private async discoveryReposViaZoekt(query?: string, limit = 3): Promise<RepoHandle[]> {
+    if (!query || query.trim().length < 3) return [];
+    try {
+      const { ZoektClient, loadZoektConfig } = await import('../../core/search/zoekt-client.js');
+      const config = loadZoektConfig();
+      if (!config.enabled) return [];
+
+      const client = new ZoektClient(config);
+      // Global search to identify relevant repos
+      const result = await client.search(query, { maxDocDisplayCount: 20 });
+      if (result.matches.length > 0) {
+        const discoveredNames = [...new Set(result.matches.map((m) => m.repository))];
+        const handles: RepoHandle[] = [];
+
+        for (const rawName of discoveredNames) {
+          // Try direct match
+          let h = this.resolveRepoFromCache(rawName);
+          if (!h) {
+            // Try matching by path suffix (Zoekt often includes domain)
+            // e.g. "code.9ji.com/org/repo" -> match "org/repo" or "repo"
+            const segments = rawName.split('/');
+            for (let i = 0; i < segments.length; i++) {
+              const suffix = segments.slice(i).join('/');
+              h = this.resolveRepoFromCache(suffix);
+              if (h) break;
+            }
+          }
+          if (h && !handles.some((existing) => existing.id === h!.id)) {
+            handles.push(h);
+          }
+          if (handles.length >= limit) break;
+        }
+        return handles;
+      }
+    } catch (e) {
+      console.error(`GitNexus: Zoekt discovery failed: ${e}`);
+    }
+    return [];
+  }
+
+  /**
+   * Merge results from multiple single-repo query calls into one unified response.
+   */
+  private mergeQueryResults(results: any[]): any {
+    if (results.length === 0) return { processes: [], process_symbols: [], definitions: [] };
+    if (results.length === 1) return results[0];
+
+    const merged = {
+      processes: [] as any[],
+      process_symbols: [] as any[],
+      definitions: [] as any[],
+      timing: { wall: 0 } as Record<string, number>,
+      warning: undefined as string | undefined,
+    };
+
+    const seenSymbolIds = new Set<string>();
+    const seenProcessIds = new Set<string>();
+
+    for (const res of results) {
+      if (res.processes) {
+        for (const p of res.processes) {
+          if (!seenProcessIds.has(p.id)) {
+            merged.processes.push(p);
+            seenProcessIds.add(p.id);
+          }
+        }
+      }
+      if (res.process_symbols) {
+        for (const s of res.process_symbols) {
+          if (!seenSymbolIds.has(s.id)) {
+            merged.process_symbols.push(s);
+            seenSymbolIds.add(s.id);
+          }
+        }
+      }
+      if (res.definitions) {
+        for (const d of res.definitions) {
+          const key = `${d.filePath}:${d.name}`;
+          if (!seenSymbolIds.has(d.id || key)) {
+            merged.definitions.push(d);
+            seenSymbolIds.add(d.id || key);
+          }
+        }
+      }
+      if (res.timing) {
+        merged.timing.wall = Math.max(merged.timing.wall, res.timing.wall || 0);
+        // Accumulate other phases if helpful, but wall is primary
+      }
+      if (res.warning) merged.warning = res.warning;
+    }
+
+    // Re-sort processes by priority across all repos
+    merged.processes.sort((a, b) => b.priority - a.priority).slice(0, 10);
+    merged.definitions = merged.definitions.slice(0, 30);
+
+    return merged;
+  }
+
   async callTool(method: string, params: any): Promise<any> {
     if (method === 'list_repos') {
       return this.listRepos();
@@ -698,8 +800,21 @@ export class LocalBackend {
       return this.callToolAtGroupRepo(method, p);
     }
 
+    // Multi-repo query support: if no repo provided and multiple exist,
+    // discover relevant repos via Zoekt and merge results.
+    if (method === 'query' && !p.repo && this.repos.size > 1) {
+      const discovered = await this.discoveryReposViaZoekt(params?.query as string);
+      if (discovered.length > 0) {
+        console.error(
+          `GitNexus: Auto-discovered ${discovered.length} repos for query: ${discovered.map((r) => r.name).join(', ')}`,
+        );
+        const results = await Promise.all(discovered.map((repo) => this.query(repo, params)));
+        return this.mergeQueryResults(results);
+      }
+    }
+
     // Resolve repo from optional param (re-reads registry on miss)
-    const repo = await this.resolveRepo((params as { repo?: string } | undefined)?.repo);
+    const repo = await this.resolveRepo(p.repo as string);
 
     switch (method) {
       case 'query':
@@ -862,9 +977,24 @@ export class LocalBackend {
     // each so both get independent wall-time records without fighting
     // over a single `current` phase slot.
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
-    const [bm25SearchResult, semanticResults] = await Promise.all([
+    const { ZoektClient, loadZoektConfig } = await import('../../core/search/zoekt-client.js');
+    const zoektCfg = loadZoektConfig();
+
+    const [bm25SearchResult, semanticResults, zoektResult] = await Promise.all([
       timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit)),
       timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit)),
+      zoektCfg.enabled
+        ? timer.time(
+            'zoekt',
+            new ZoektClient(zoektCfg).search(searchQuery, {
+              repoFilter: repo.name,
+              maxDocDisplayCount: searchLimit,
+            }),
+          )
+        : Promise.resolve({
+            matches: [],
+            stats: { filesConsidered: 0, filesLoaded: 0, matchCount: 0, durationMs: 0 },
+          }),
     ]);
 
     const bm25Results = bm25SearchResult.results;
@@ -895,6 +1025,27 @@ export class LocalBackend {
         existing.score += rrfScore;
       } else {
         scoreMap.set(key, { score: rrfScore, data: result });
+      }
+    }
+
+    const zoektMatches = zoektResult.matches || [];
+    for (let i = 0; i < zoektMatches.length; i++) {
+      const match = zoektMatches[i];
+      // Map Zoekt file match to our symbol-like structure
+      const sym = {
+        nodeId: `File:${match.fileName}`,
+        name: match.fileName.split('/').pop() || match.fileName,
+        type: 'File',
+        filePath: match.fileName,
+        zoektScore: match.score,
+      };
+      const key = sym.nodeId;
+      const rrfScore = 1 / (60 + i);
+      const existing = scoreMap.get(key);
+      if (existing) {
+        existing.score += rrfScore;
+      } else {
+        scoreMap.set(key, { score: rrfScore, data: sym });
       }
     }
 
@@ -3914,7 +4065,11 @@ export class LocalBackend {
     context_lines?: number;
   }): Promise<string> {
     const { ZoektClient, loadZoektConfig } = await import('../../core/search/zoekt-client.js');
-    const client = new ZoektClient(loadZoektConfig());
+    const config = loadZoektConfig();
+    if (!config.enabled) {
+      return 'Zoekt search is disabled. Set ZOEKT_ENABLED=true or provide ZOEKT_ENDPOINTS to enable it.';
+    }
+    const client = new ZoektClient(config);
     let q = params.query;
     if (params.regex) q = `r:${q}`;
     if (params.case_sensitive) q = `case:yes ${q}`;
@@ -3933,7 +4088,11 @@ export class LocalBackend {
     max_results?: number;
   }): Promise<string> {
     const { ZoektClient, loadZoektConfig } = await import('../../core/search/zoekt-client.js');
-    const client = new ZoektClient(loadZoektConfig());
+    const config = loadZoektConfig();
+    if (!config.enabled) {
+      return 'Zoekt symbol search is disabled. Set ZOEKT_ENABLED=true or provide ZOEKT_ENDPOINTS to enable it.';
+    }
+    const client = new ZoektClient(config);
     const result = await client.symbolSearch(params.symbol, params.kind ?? 'all', {
       repoFilter: params.repo,
       maxDocDisplayCount: params.max_results ?? 50,

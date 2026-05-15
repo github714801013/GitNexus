@@ -9,6 +9,8 @@
 // ─── 配置 ────────────────────────────────────────────────────────────────────
 
 export interface ZoektConfig {
+  /** 是否启用 Zoekt */
+  enabled: boolean;
   /** Zoekt webserver 端点列表，并发查询后合并结果 */
   endpoints: string[];
   /** 单次请求超时（毫秒），默认 10000 */
@@ -16,12 +18,16 @@ export interface ZoektConfig {
 }
 
 export function loadZoektConfig(): ZoektConfig {
+  const enabled =
+    process.env.ZOEKT_ENABLED === 'true' ||
+    !!(process.env.ZOEKT_ENDPOINTS || process.env.ZOEKT_URL);
   const raw = process.env.ZOEKT_ENDPOINTS ?? process.env.ZOEKT_URL ?? '';
   const endpoints = raw
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
   return {
+    enabled,
     endpoints: endpoints.length > 0 ? endpoints : ['http://localhost:6070'],
     timeoutMs: 10_000,
   };
@@ -118,6 +124,7 @@ export class ZoektClient {
   constructor(config?: ZoektConfig) {
     const base = config ?? loadZoektConfig();
     this.config = {
+      enabled: base.enabled,
       endpoints: base.endpoints,
       timeoutMs: base.timeoutMs ?? 10_000,
     };
@@ -173,10 +180,6 @@ export class ZoektClient {
     const settled = await Promise.all(tasks);
 
     const successes = settled.filter((r): r is ZoektSearchResult => !(r instanceof Error));
-    if (successes.length === 0 && settled.length > 0) {
-      throw settled[0]; // Throw the first error if all endpoints failed
-    }
-
     return successes;
   }
 
@@ -192,6 +195,9 @@ export class ZoektClient {
       ? `repo:(^|/)${escapeZoektRepoRegex(opts.repoFilter)}$`
       : undefined;
     const q = repoQuery ? `${repoQuery} ${query}` : query;
+
+    console.log(`[zoekt] querying endpoint ${endpoint}: Q="${q}"`);
+
     const body = JSON.stringify({
       Q: q,
       Opts: {

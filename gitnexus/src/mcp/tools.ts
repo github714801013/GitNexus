@@ -55,7 +55,9 @@ intentionally want to narrow results to one Zoekt repository.`,
     description: `Query the code knowledge graph for execution flows related to a concept.
 Returns processes (call chains) ranked by relevance, each with its symbols and file locations.
 
-WHEN TO USE: Understanding how code works together. Use this when you need execution flows and relationships, not just file matches. Complements grep/IDE search.
+GRAPH-FIRST WORKFLOW: Do not start by reading large source files. Use query() to find relevant flows, then context() on specific symbols. Use code_snippet only for bounded verification after a tool returns a file path and line number.
+
+WHEN TO USE: Understanding how code works together. Use this when you need execution flows and relationships, not just file matches. Complements precise text search, but should come before broad file reading.
 AFTER THIS: Use context() on a specific symbol for 360-degree view (callers, callees, categorized refs).
 
 Returns results grouped by process (execution flow):
@@ -63,9 +65,11 @@ Returns results grouped by process (execution flow):
 - process_symbols: all symbols in those flows with file locations and module (functional area)
 - definitions: standalone types/interfaces not in any process
 
-Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.
+Hybrid ranking: BM25 keyword + Semantic vector + Zoekt exact/regex search, merged and ranked by Reciprocal Rank Fusion (RRF).
 
 GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that group (merged via RRF), or "@<groupName>/<groupRepoPath>" to run against a single member (same path keys as in group.yaml). If you use "@<groupName>" only, the member repo defaults to the lexicographically first key in group.yaml "repos". Prefer resources for contracts/status (see migration from legacy group_* tools).
+
+SMART DISCOVERY: In multi-repo setups, you can omit "repo" for the "query" tool. It will use Zoekt to automatically identify relevant repositories, perform a full hybrid search on each, and return merged results from all matching projects.
 
 SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). When "repo" starts with "@", only processes whose symbols fall under that prefix are included. For a normal indexed repo name (no leading @), this field is currently ignored by the server.`,
     inputSchema: {
@@ -119,7 +123,7 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
     name: 'cypher',
     description: `Execute Cypher query against the code knowledge graph.
 
-WHEN TO USE: Complex structural queries that search/explore can't answer. READ gitnexus://repo/{name}/schema first for the full schema.
+WHEN TO USE: Complex structural queries that query/context/impact or text search can't answer, especially cross-file relationship questions. Prefer Cypher over reading many files when you can express the relationship directly. READ gitnexus://repo/{name}/schema first for the full schema.
 AFTER THIS: Use context() on result symbols for deeper context.
 
 SCHEMA:
@@ -178,8 +182,10 @@ TIPS:
     description: `360-degree view of a single code symbol.
 Shows categorized incoming/outgoing references (calls, imports, extends, implements, methods, properties, overrides), process participation, and file location.
 
-WHEN TO USE: After query() to understand a specific symbol in depth. When you need to know all callers, callees, and what execution flows a symbol participates in.
-AFTER THIS: Use impact() if planning changes, or READ gitnexus://repo/{name}/process/{processName} for full execution trace.
+GRAPH-FIRST WORKFLOW: When you already have a method/class/function name, call context() before reading its file. This gives the definition location, callers, callees, field accesses, and related processes in one bounded response.
+
+WHEN TO USE: After query() or zoekt_symbol(), or whenever you need to know all callers, callees, and what execution flows a symbol participates in.
+AFTER THIS: Use impact() if planning changes. Use code_snippet for 10-20 lines around the definition only when you need to verify exact implementation details.
 
 Handles disambiguation: if multiple symbols share the same name, returns ranked candidates (each with a relevance score) for you to pick from. Use uid for zero-ambiguity lookup, or narrow the search with file_path and/or kind hints.
 
@@ -290,6 +296,8 @@ Each edit is tagged with confidence:
     name: 'impact',
     description: `Analyze the blast radius of changing a code symbol.
 Returns affected symbols grouped by depth, plus risk assessment, affected execution flows, and affected modules.
+
+GRAPH-FIRST WORKFLOW: Before changing a field, method, class, route handler, or shared file, run impact() to see the blast radius instead of manually chasing references through files.
 
 WHEN TO USE: Before making code changes — especially refactoring, renaming, or modifying shared code. Shows what would break.
 AFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.
@@ -486,7 +494,9 @@ Returns: single route object when one match, or { routes: [...], total: N } for 
     name: 'code_snippet',
     description: `Read a bounded source-code snippet directly from an indexed repository by file path and line range.
 
-WHEN TO USE: After zoekt_search, query, context, or cypher returns a file path and line number, use this to fetch the exact surrounding source without running graph or vector search.
+LOCATE -> VERIFY -> EXPAND: First locate with context(), impact(), cypher(), or a precise zoekt_search query. Then verify with code_snippet for roughly 10-20 relevant lines. Expand only if the snippet reveals unknown variables or control flow that graph tools cannot resolve.
+
+WHEN TO USE: After zoekt_search, query, context, impact, or cypher returns a file path and line number, use this to fetch the exact surrounding source without reading the whole file.
 
 Performance model: resolves the repo from the registry, validates the requested path stays inside the repo root, reads the file directly without repo locks, and retries once on transient filesystem errors. Returned content is capped by file size, line count, and character count.`,
     inputSchema: {
@@ -550,7 +560,9 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
     name: 'zoekt_search',
     description: `Full-text and regex search across indexed repositories using Zoekt.
 
-WHEN TO USE: Finding code by content — literal strings, regex patterns, or language-filtered searches. Faster and more precise than semantic search for exact matches.
+LOW PRIORITY / FALLBACK: The 'query' tool already integrates Zoekt internally and is the preferred search entry point. Use zoekt_search only as a final fallback when 'query' fails to find specific code, or when you need advanced regex/language filters not available in 'query'.
+
+WHEN TO USE: Finding code by content — literal strings, regex patterns, or language-filtered searches. Faster and more precise than semantic search for exact matches. Use it as a precise locator, then inspect matches with code_snippet or understand symbols with context().
 
 GLOBAL BY DEFAULT: omit "repo" to search ALL indexed repos at once. The graph-tool multi-repo rule does not apply here. Only set repo when you want to restrict results to a specific Zoekt repository.
 
@@ -559,9 +571,11 @@ Supports Zoekt query syntax:
   - Regex (set regex:true): \`func\\s+\\w+Error\`
   - Language filter: \`lang:typescript handleError\`
   - File filter: \`file:*.test.ts\`
+  - Combined filters: \`wxdgTab file:kcServices.cs lang:csharp\`
   - Symbol filter: \`sym:MyClass\`
 
 Query-writing notes:
+  - Prefer adding file:, lang:, sym:, or repo filters when you know them. Avoid broad keyword-only searches that return many files.
   - If the repo parameter is set, do not also put \`repo:<name>\` in query; the tool adds the repo filter.
   - Avoid pasting partially quoted code such as \`"@PostMapping(\\"/register\`; unmatched quotes or parentheses can be parsed as Zoekt syntax and return HTTP 400/zero results.
   - For Java/Spring annotations, prefer stable tokens such as \`PostMapping /register\` or search the path first with \`/register\`, then inspect the returned lines.
@@ -582,7 +596,8 @@ Configure endpoints via ZOEKT_ENDPOINTS (comma-separated) or ZOEKT_URL env vars.
         max_results: { type: 'number', description: 'Max file matches to return (default 50)' },
         context_lines: {
           type: 'number',
-          description: 'Context lines around each match (default 2)',
+          description:
+            'Context lines around each match (default 2). Use 5-10 lines when one focused match is likely enough; use code_snippet for exact line ranges.',
         },
       },
       required: ['query'],
@@ -591,6 +606,8 @@ Configure endpoints via ZOEKT_ENDPOINTS (comma-separated) or ZOEKT_URL env vars.
   {
     name: 'zoekt_symbol',
     description: `Precise symbol search (functions, classes, methods, interfaces) using Zoekt ctags index.
+
+LOW PRIORITY / FALLBACK: The 'query' tool already integrates Zoekt internally and is the preferred search entry point. Use zoekt_symbol only as a final fallback when 'query' or 'context' fails to find a specific symbol across the entire multi-repo setup.
 
 WHEN TO USE: Finding where a specific symbol is defined — more precise than full-text search for symbol names.
 
