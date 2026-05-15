@@ -133,6 +133,7 @@ export class ZoektClient {
    *   - Symbol 搜索：`sym:MyClass`
    */
   async search(query: string, opts: ZoektSearchOpts = {}): Promise<ZoektSearchResult> {
+    console.log(`[zoekt] search: query="${query}", opts=${JSON.stringify(opts)}`);
     const results = await this.queryAllEndpoints(query, opts);
     return this.mergeResults(results);
   }
@@ -148,6 +149,9 @@ export class ZoektClient {
     _kind: string = 'all',
     opts: ZoektSearchOpts = {},
   ): Promise<ZoektSearchResult> {
+    console.log(
+      `[zoekt] symbolSearch: symbol="${symbol}", kind="${_kind}", opts=${JSON.stringify(opts)}`,
+    );
     const q = `sym:${symbol}`;
     return this.search(q, opts);
   }
@@ -163,11 +167,17 @@ export class ZoektClient {
       this.queryEndpoint(endpoint, query, opts).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`[zoekt] endpoint ${endpoint} failed: ${msg}`);
-        return null;
+        return new Error(msg);
       }),
     );
     const settled = await Promise.all(tasks);
-    return settled.filter((r): r is ZoektSearchResult => r !== null);
+
+    const successes = settled.filter((r): r is ZoektSearchResult => !(r instanceof Error));
+    if (successes.length === 0 && settled.length > 0) {
+      throw settled[0]; // Throw the first error if all endpoints failed
+    }
+
+    return successes;
   }
 
   /** 向单个 Zoekt 端点发送搜索请求 */
