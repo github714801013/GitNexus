@@ -942,10 +942,58 @@ export class LocalBackend {
    * 3. Group by process, rank by aggregate relevance + internal cluster cohesion
    * 4. Return: { processes, process_symbols, definitions }
    */
+  /**
+   * 启发式分析搜索查询，当结果为空或过少时提供修正建议。
+   */
+  private getSearchHeuristicWarning(query: string, resultsFound: number): string | undefined {
+    if (!query) return undefined;
+
+    const warnings: string[] = [];
+    const hasUnquotedChinese = /[\u4e00-\u9fa5]/.test(query) && !query.includes('"');
+    const orCount = (query.match(/ OR /g) || []).length;
+    const tokens = query.split(/\s+/).filter((t) => t.length > 0 && !['OR', 'AND'].includes(t));
+    const hasSpaces = query.includes(' ');
+    const hasQuotedSpacesChinese = /"[\u4e00-\u9fa5]+\s+[\u4e00-\u9fa5]+"/.test(query);
+
+    if (resultsFound === 0) {
+      if (tokens.length > 5 && orCount === 0) {
+        warnings.push(
+          `你输入了 ${tokens.length} 个关键词且未使用 OR。注意：Zoekt 中的空格默认为 AND 关系，要求一个文件中同时出现这所有关键词。这太严格了，建议分拆查询或使用 OR。`,
+        );
+      }
+      if (hasUnquotedChinese) {
+        warnings.push('你的查询包含中文但未使用双引号，系统已自动为你增加引号以提升匹配率。');
+      }
+      if (hasQuotedSpacesChinese) {
+        warnings.push(
+          '你的引号内包含"中文+空格"，Zoekt 只会匹配包含物理空格的完全一致字符串。建议去掉空格或分拆关键词。',
+        );
+      }
+      if (orCount > 0) {
+        warnings.push(
+          `你的查询使用了 ${orCount + 1} 个 OR 分支但未找到匹配项。这通常是因为其中某个词在代码中完全不存在。建议分拆查询，分别测试每个子项。`,
+        );
+      } else if (hasSpaces && !query.includes('"') && !query.includes('(') && tokens.length <= 5) {
+        warnings.push(
+          'Zoekt 中的空格默认为 AND 关系。如果你的意图是搜索一个短语，请务必使用双引号。',
+        );
+      }
+    }
+
+    return warnings.length > 0 ? `[SEARCH TIP] ${warnings.join(' ')}` : undefined;
+  }
+
+  /**
+   * 1. Hybrid search (BM25 + semantic) to find matching symbols
+   * 2. Trace each match to its process(es) via STEP_IN_PROCESS
+   * 3. Group by process, rank by aggregate relevance + internal cluster cohesion
+   * 4. Return: { processes, process_symbols, definitions }
+   */
   private async query(
     repo: RepoHandle,
     params: {
       query: string;
+      zoekt?: string;
       task_context?: string;
       goal?: string;
       limit?: number;
@@ -953,8 +1001,8 @@ export class LocalBackend {
       include_content?: boolean;
     },
   ): Promise<any> {
-    if (!params.query?.trim()) {
-      return { error: 'query parameter is required and cannot be empty.' };
+    if (!params.query?.trim() && !params.zoekt?.trim()) {
+      return { error: 'query or zoekt parameter is required and cannot be empty.' };
     }
 
     await this.ensureInitialized(repo.id);
@@ -962,7 +1010,7 @@ export class LocalBackend {
     const processLimit = params.limit || 5;
     const maxSymbolsPerProcess = params.max_symbols || 10;
     const includeContent = params.include_content ?? false;
-    const searchQuery = params.query.trim();
+    const searchQuery = (params.zoekt || params.query).trim();
 
     // Per-phase timing instrumentation (#553). Records wall time for each
     // observable sub-step of the search pipeline so production latency can
@@ -1235,15 +1283,18 @@ export class LocalBackend {
     const timing = timer.summary();
     logQueryTiming(searchQuery, timing);
 
+    const tip = this.getSearchHeuristicWarning(searchQuery, processes.length + definitions.length);
+
     return {
       processes,
       process_symbols: dedupedSymbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
-      ...(!ftsUsed && {
-        warning:
-          'FTS extension unavailable - keyword search degraded. Run: gitnexus analyze --force to rebuild indexes.',
-      }),
+      warning:
+        tip ||
+        (!ftsUsed
+          ? 'FTS extension unavailable - keyword search degraded. Run: gitnexus analyze --force to rebuild indexes.'
+          : undefined),
     };
   }
 
@@ -4070,7 +4121,7 @@ export class LocalBackend {
       return 'Zoekt search is disabled. Set ZOEKT_ENABLED=true or provide ZOEKT_ENDPOINTS to enable it.';
     }
     const client = new ZoektClient(config);
-    let q = params.query;
+    let q = (params as any).zoekt || params.query;
     if (params.regex) q = `r:${q}`;
     if (params.case_sensitive) q = `case:yes ${q}`;
     const result = await client.search(q, {
@@ -4078,7 +4129,10 @@ export class LocalBackend {
       maxDocDisplayCount: params.max_results ?? 50,
       numContextLines: params.context_lines ?? 2,
     });
-    return this.formatZoektResult(result);
+    return this.formatZoektResult(
+      result,
+      (params as any).zoekt || params.query || (params as any).symbol,
+    );
   }
 
   private async zoektSymbol(params: {
@@ -4097,18 +4151,23 @@ export class LocalBackend {
       repoFilter: params.repo,
       maxDocDisplayCount: params.max_results ?? 50,
     });
-    return this.formatZoektResult(result);
+    return this.formatZoektResult(result, (params as any).query || (params as any).symbol);
   }
 
   private formatZoektResult(
     result: import('../../core/search/zoekt-client.js').ZoektSearchResult,
+    originalQuery?: string,
   ): string {
+    const tip = this.getSearchHeuristicWarning(originalQuery || '', result.matches.length);
     if (result.matches.length === 0) {
-      return `No matches found. Stats: ${result.stats.matchCount} matches considered in ${result.stats.durationMs}ms.`;
+      let msg = `No matches found. Stats: ${result.stats.matchCount} matches considered in ${result.stats.durationMs}ms.`;
+      if (tip) msg += `\n\n${tip}`;
+      return msg;
     }
     const lines: string[] = [
       `Found ${result.matches.length} file(s) — ${result.stats.matchCount} match(es) in ${result.stats.durationMs}ms\n`,
     ];
+    if (tip) lines.push(`${tip}\n`);
     for (const m of result.matches) {
       lines.push(`## ${m.repository} · ${m.fileName} (score: ${m.score.toFixed(2)})`);
       for (const lm of m.lineMatches) {

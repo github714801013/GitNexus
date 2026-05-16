@@ -75,7 +75,16 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Natural language or keyword search query' },
+        query: {
+          type: 'string',
+          description:
+            'Natural language or simple keyword query. Use this for general concepts or English terms.',
+        },
+        zoekt: {
+          type: 'string',
+          description:
+            'Advanced: Raw Zoekt query string. MANDATORY for Chinese phrases or complex logic. RULES: 1. Wrap Chinese phrases in double quotes (e.g., "成为会员"). 2. Spaces mean AND (both terms must exist in the file). 3. Use uppercase OR for alternatives. 4. Use parentheses for grouping. If provided, this overrides the default keyword search step.',
+        },
         task_context: {
           type: 'string',
           description: 'What you are working on (e.g., "adding OAuth support"). Helps ranking.',
@@ -116,7 +125,7 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
             'Optional monorepo service root (relative path, "/" separators). In group mode (@repo), prefix-matches symbol file paths; ignored for a normal repo name. Empty string is rejected server-side.',
         },
       },
-      required: ['query'],
+      required: [],
     },
   },
   {
@@ -585,7 +594,15 @@ Configure endpoints via ZOEKT_ENDPOINTS (comma-separated) or ZOEKT_URL env vars.
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Search query (Zoekt syntax)' },
+        query: {
+          type: 'string',
+          description: 'Standard query string. Overridden by "zoekt" if provided.',
+        },
+        zoekt: {
+          type: 'string',
+          description:
+            'Advanced: Raw Zoekt query string. MANDATORY for Chinese phrases. RULES: 1. Wrap Chinese phrases in double quotes. 2. Spaces mean AND. 3. Use uppercase OR for alternatives.',
+        },
         repo: {
           type: 'string',
           description:
@@ -600,7 +617,7 @@ Configure endpoints via ZOEKT_ENDPOINTS (comma-separated) or ZOEKT_URL env vars.
             'Context lines around each match (default 2). Use 5-10 lines when one focused match is likely enough; use code_snippet for exact line ranges.',
         },
       },
-      required: ['query'],
+      required: [],
     },
   },
   {
