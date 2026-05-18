@@ -152,4 +152,36 @@ describe('LocalBackend.query with Zoekt integration', () => {
     expect(result.process_symbols).toHaveLength(2);
     expect(result.definitions).toHaveLength(2);
   });
+
+  it('如果未提供 repo 且传入 zoekt，则使用 Zoekt 跨仓库发现并合并结果', async () => {
+    mockLoadConfig.mockReturnValue({
+      enabled: true,
+      endpoints: ['http://localhost:6070'],
+    });
+
+    mockSearch.mockResolvedValueOnce({
+      matches: [
+        { repository: 'repo-1', fileName: 'src/a.ts', score: 10.0, lineMatches: [] },
+        { repository: 'repo-2', fileName: 'src/b.ts', score: 9.0, lineMatches: [] },
+      ],
+      stats: { matchCount: 2, durationMs: 1 },
+    });
+
+    (backend as any).repos.set('repo-1', { id: 'repo-1', name: 'repo-1', repoPath: '/p1' });
+    (backend as any).repos.set('repo-2', { id: 'repo-2', name: 'repo-2', repoPath: '/p2' });
+
+    const querySpy = vi.spyOn(backend as any, 'query');
+    querySpy.mockImplementation(async (repo: any) => ({
+      processes: [{ id: `proc-${repo.id}`, priority: 0.5, summary: `Process in ${repo.id}` }],
+      process_symbols: [],
+      definitions: [],
+      timing: { wall: 10 },
+    }));
+
+    const result = await backend.callTool('query', { zoekt: '"成为会员"' });
+
+    expect(mockSearch).toHaveBeenCalledWith('"成为会员"', { maxDocDisplayCount: 20 });
+    expect(querySpy).toHaveBeenCalledTimes(2);
+    expect(result.processes.map((p: any) => p.id)).toEqual(['proc-repo-1', 'proc-repo-2']);
+  });
 });

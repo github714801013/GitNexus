@@ -79,6 +79,7 @@ export interface ZoektStats {
 export interface ZoektSearchResult {
   matches: ZoektFileMatch[];
   stats: ZoektStats;
+  warning?: string;
 }
 
 // ─── 内部 Zoekt API 响应结构 ──────────────────────────────────────────────────
@@ -140,7 +141,7 @@ export class ZoektClient {
    *   - Symbol 搜索：`sym:MyClass`
    */
   async search(query: string, opts: ZoektSearchOpts = {}): Promise<ZoektSearchResult> {
-    console.log(`[zoekt] search: query="${query}", opts=${JSON.stringify(opts)}`);
+    console.error(`[zoekt] search: query="${query}", opts=${JSON.stringify(opts)}`);
     const results = await this.queryAllEndpoints(query, opts);
     return this.mergeResults(results);
   }
@@ -156,7 +157,7 @@ export class ZoektClient {
     _kind: string = 'all',
     opts: ZoektSearchOpts = {},
   ): Promise<ZoektSearchResult> {
-    console.log(
+    console.error(
       `[zoekt] symbolSearch: symbol="${symbol}", kind="${_kind}", opts=${JSON.stringify(opts)}`,
     );
     const q = `sym:${symbol}`;
@@ -196,7 +197,7 @@ export class ZoektClient {
       : undefined;
     const q = repoQuery ? `${repoQuery} ${query}` : query;
 
-    console.log(`[zoekt] querying endpoint ${endpoint}: Q="${q}"`);
+    console.error(`[zoekt] querying endpoint ${endpoint}: Q="${q}"`);
 
     const body = JSON.stringify({
       Q: q,

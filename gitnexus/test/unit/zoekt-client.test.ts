@@ -97,6 +97,20 @@ describe('ZoektClient.search', () => {
     expect(result.stats.durationMs).toBe(1);
   });
 
+  it('搜索时不向 stdout 写日志，避免污染 MCP JSON 输出', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => makeApiResponse([]),
+    });
+
+    const client = new ZoektClient({ endpoints: ['http://localhost:6070'] });
+    await client.search('handleError');
+
+    expect(logSpy).not.toHaveBeenCalled();
+    logSpy.mockRestore();
+  });
+
   it('空结果时返回空 matches', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,

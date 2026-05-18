@@ -39,11 +39,7 @@ AFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work wi
 
 When multiple repos are indexed, graph-backed tools must specify "repo"
 to target the correct one (query, context, impact, cypher, detect_changes,
-rename, route_map, etc.).
-
-Exception: zoekt_search and zoekt_symbol are global search tools. For Zoekt,
-omit "repo" to search all indexed repositories; set "repo" only when you
-intentionally want to narrow results to one Zoekt repository.`,
+rename, route_map, etc.). Use query for Zoekt-backed search across repositories.`,
     inputSchema: {
       type: 'object',
       properties: {},
@@ -69,7 +65,7 @@ Hybrid ranking: BM25 keyword + Semantic vector + Zoekt exact/regex search, merge
 
 GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that group (merged via RRF), or "@<groupName>/<groupRepoPath>" to run against a single member (same path keys as in group.yaml). If you use "@<groupName>" only, the member repo defaults to the lexicographically first key in group.yaml "repos". Prefer resources for contracts/status (see migration from legacy group_* tools).
 
-SMART DISCOVERY: In multi-repo setups, you can omit "repo" for the "query" tool. It will use Zoekt to automatically identify relevant repositories, perform a full hybrid search on each, and return merged results from all matching projects.
+SMART DISCOVERY: In multi-repo setups, you can omit "repo" for the "query" tool only when using Zoekt-backed discovery. When omitting "repo", pass "zoekt"; GitNexus will use Zoekt to identify relevant repositories, perform a full hybrid search on each, and return merged results from all matching projects.
 
 SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). When "repo" starts with "@", only processes whose symbols fall under that prefix are included. For a normal indexed repo name (no leading @), this field is currently ignored by the server.`,
     inputSchema: {
@@ -116,7 +112,7 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
         repo: {
           type: 'string',
           description:
-            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>" (member path keys from group.yaml). Omit when only one indexed repo exists.',
+            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>" (member path keys from group.yaml). Omit when only one indexed repo exists. If omitted in multi-repo setups, provide "zoekt" for cross-repo Zoekt discovery.',
         },
         service: {
           type: 'string',
@@ -193,7 +189,7 @@ Shows categorized incoming/outgoing references (calls, imports, extends, impleme
 
 GRAPH-FIRST WORKFLOW: When you already have a method/class/function name, call context() before reading its file. This gives the definition location, callers, callees, field accesses, and related processes in one bounded response.
 
-WHEN TO USE: After query() or zoekt_symbol(), or whenever you need to know all callers, callees, and what execution flows a symbol participates in.
+WHEN TO USE: After query(), or whenever you need to know all callers, callees, and what execution flows a symbol participates in.
 AFTER THIS: Use impact() if planning changes. Use code_snippet for 10-20 lines around the definition only when you need to verify exact implementation details.
 
 Handles disambiguation: if multiple symbols share the same name, returns ranked candidates (each with a relevance score) for you to pick from. Use uid for zero-ambiguity lookup, or narrow the search with file_path and/or kind hints.
@@ -503,9 +499,9 @@ Returns: single route object when one match, or { routes: [...], total: N } for 
     name: 'code_snippet',
     description: `Read a bounded source-code snippet directly from an indexed repository by file path and line range.
 
-LOCATE -> VERIFY -> EXPAND: First locate with context(), impact(), cypher(), or a precise zoekt_search query. Then verify with code_snippet for roughly 10-20 relevant lines. Expand only if the snippet reveals unknown variables or control flow that graph tools cannot resolve.
+LOCATE -> VERIFY -> EXPAND: First locate with query(), context(), impact(), or cypher(). Then verify with code_snippet for roughly 10-20 relevant lines. Expand only if the snippet reveals unknown variables or control flow that graph tools cannot resolve.
 
-WHEN TO USE: After zoekt_search, query, context, impact, or cypher returns a file path and line number, use this to fetch the exact surrounding source without reading the whole file.
+WHEN TO USE: After query, context, impact, or cypher returns a file path and line number, use this to fetch the exact surrounding source without reading the whole file.
 
 Performance model: resolves the repo from the registry, validates the requested path stays inside the repo root, reads the file directly without repo locks, and retries once on transient filesystem errors. Returned content is capped by file size, line count, and character count.`,
     inputSchema: {
@@ -563,89 +559,6 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
         exactOnly: { type: 'boolean', description: 'Exact match only in cascade' },
       },
       required: ['name'],
-    },
-  },
-  {
-    name: 'zoekt_search',
-    description: `[FALLBACK TOOL] Full-text and regex search across indexed repositories using Zoekt.
-
-NOTE: This is a fallback alternative to the 'query' tool. The 'query' tool already integrates Zoekt internally, supports smart multi-repo discovery, and is the preferred search entry point.
-
-WHEN TO USE: ONLY use 'zoekt_search' when 'query' fails to find specific code, or when you explicitly need advanced regex/language filters not available in 'query'. Best for finding exact literal strings, regex patterns, or language-filtered searches. Use it as a precise locator, then inspect matches with code_snippet or understand symbols with context().
-
-GLOBAL BY DEFAULT: omit "repo" to search ALL indexed repos at once. The graph-tool multi-repo rule does not apply here. Only set repo when you want to restrict results to a specific Zoekt repository.
-
-Supports Zoekt query syntax:
-  - Literal: \`handleError\`
-  - Regex (set regex:true): \`func\\s+\\w+Error\`
-  - Language filter: \`lang:typescript handleError\`
-  - File filter: \`file:*.test.ts\`
-  - Combined filters: \`wxdgTab file:kcServices.cs lang:csharp\`
-  - Symbol filter: \`sym:MyClass\`
-
-Query-writing notes:
-  - Prefer adding file:, lang:, sym:, or repo filters when you know them. Avoid broad keyword-only searches that return many files.
-  - If the repo parameter is set, do not also put \`repo:<name>\` in query; the tool adds the repo filter.
-  - Avoid pasting partially quoted code such as \`"@PostMapping(\\"/register\`; unmatched quotes or parentheses can be parsed as Zoekt syntax and return HTTP 400/zero results.
-  - For Java/Spring annotations, prefer stable tokens such as \`PostMapping /register\` or search the path first with \`/register\`, then inspect the returned lines.
-  - To search an exact string that includes quotes or parentheses, use a complete, balanced query or fall back to simpler tokens instead of escaped partial fragments.
-
-Configure endpoints via ZOEKT_ENDPOINTS (comma-separated) or ZOEKT_URL env vars.`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'Standard query string. Overridden by "zoekt" if provided.',
-        },
-        zoekt: {
-          type: 'string',
-          description:
-            'Advanced: Raw Zoekt query string. MANDATORY for Chinese phrases. RULES: 1. Wrap Chinese phrases in double quotes. 2. Spaces mean AND. 3. Use uppercase OR for alternatives.',
-        },
-        repo: {
-          type: 'string',
-          description:
-            'Optional filter. Restrict search to this Zoekt repo name only when intentionally narrowing results; omit to search all indexed repos.',
-        },
-        regex: { type: 'boolean', description: 'Treat query as regex (prepends r: prefix)' },
-        case_sensitive: { type: 'boolean', description: 'Case-sensitive search' },
-        max_results: { type: 'number', description: 'Max file matches to return (default 50)' },
-        context_lines: {
-          type: 'number',
-          description:
-            'Context lines around each match (default 2). Use 5-10 lines when one focused match is likely enough; use code_snippet for exact line ranges.',
-        },
-      },
-      required: [],
-    },
-  },
-  {
-    name: 'zoekt_symbol',
-    description: `[FALLBACK TOOL] Precise symbol search (functions, classes, methods, interfaces) using Zoekt ctags index.
-
-NOTE: This is a fallback alternative to the 'query' and 'context' tools. The 'query' tool already integrates Zoekt internally, supports smart multi-repo discovery, and is the preferred search entry point.
-
-WHEN TO USE: ONLY use 'zoekt_symbol' when 'query' or 'context' fails to find a specific symbol across the entire multi-repo setup. Best for finding where a specific symbol is defined when other tools fail.
-
-GLOBAL BY DEFAULT: omit "repo" to search ALL indexed repos at once. The graph-tool multi-repo rule does not apply here. Only set repo when you want to restrict results to a specific Zoekt repository.`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        symbol: { type: 'string', description: 'Symbol name to search for' },
-        kind: {
-          type: 'string',
-          enum: ['function', 'class', 'method', 'interface', 'all'],
-          description: 'Symbol kind filter (default: all)',
-        },
-        repo: {
-          type: 'string',
-          description:
-            'Optional filter. Restrict search to this Zoekt repo name only when intentionally narrowing results; omit to search all indexed repos.',
-        },
-        max_results: { type: 'number', description: 'Max file matches to return (default 50)' },
-      },
-      required: ['symbol'],
     },
   },
 ];

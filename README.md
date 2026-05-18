@@ -237,7 +237,7 @@ gitnexus group status <name>     # Check staleness of repos in a group
 | `group_query`    | Search execution flows across all repos in a group                | —             |
 | `group_status`   | Check staleness of repos in a group                               | —             |
 
-> When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({query: "auth", repo: "my-app"})`.
+> When only one repo is indexed, the `repo` parameter is optional. With multiple repos, use `list_repos` to discover available targets, or call `query` without `repo` to let GitNexus auto-discover relevant repos. After narrowing the target, specify `repo` for graph-backed tools such as `context`, `impact`, `cypher`, `detect_changes`, `rename`, and route/shape tools: `context({name: "validateUser", repo: "my-app"})`.
 
 **Resources** for instant context:
 

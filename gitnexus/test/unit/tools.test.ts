@@ -2,7 +2,7 @@
  * Unit Tests: MCP Tool Definitions
  *
  * Tests: GITNEXUS_TOOLS from tools.ts
- * - All 13 tools are defined (per-repo + group_list/group_sync)
+ * - All tools are defined (per-repo + group_list/group_sync)
  * - Each tool has valid name, description, inputSchema
  * - Required fields are correct
  * - Optional repo parameter is present on tools that need it
@@ -13,8 +13,8 @@ import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 const GROUP_TOOLS = new Set(['group_list', 'group_sync']);
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 2 group + 2 zoekt + code_snippet)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(16);
+  it('exports all tools (7 base + 3 route/tool/shape + 1 api_impact + 2 group + code_snippet)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(14);
   });
 
   it('contains all expected tool names', () => {
@@ -47,11 +47,12 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
-  it('query tool requires "query" parameter', () => {
+  it('query tool accepts "query" and raw "zoekt" parameters', () => {
     const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
-    expect(queryTool.inputSchema.required).toContain('query');
     expect(queryTool.inputSchema.properties.query).toBeDefined();
     expect(queryTool.inputSchema.properties.query.type).toBe('string');
+    expect(queryTool.inputSchema.properties.zoekt).toBeDefined();
+    expect(queryTool.inputSchema.properties.zoekt.type).toBe('string');
   });
 
   it('cypher tool requires "query" parameter', () => {
@@ -96,18 +97,22 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
-  it('documents Zoekt repo as an optional narrowing filter, not a multi-repo requirement', () => {
-    const listReposTool = GITNEXUS_TOOLS.find((t) => t.name === 'list_repos')!;
-    expect(listReposTool.description).toContain('Exception: zoekt_search and zoekt_symbol');
-    expect(listReposTool.description).toContain('omit "repo" to search all indexed repositories');
+  it('does not expose direct Zoekt MCP tools', () => {
+    const names = GITNEXUS_TOOLS.map((t) => t.name);
+    expect(names).not.toContain('zoekt_search');
+    expect(names).not.toContain('zoekt_symbol');
+  });
 
-    for (const name of ['zoekt_search', 'zoekt_symbol'] as const) {
-      const tool = GITNEXUS_TOOLS.find((t) => t.name === name)!;
-      expect(tool.description).toContain('GLOBAL BY DEFAULT');
-      expect(tool.description).toContain('The graph-tool multi-repo rule does not apply here');
-      expect(tool.inputSchema.properties.repo.description).toContain('Optional filter');
-      expect(tool.inputSchema.required).not.toContain('repo');
-    }
+  it('documents query as the unified Zoekt entry point', () => {
+    const listReposTool = GITNEXUS_TOOLS.find((t) => t.name === 'list_repos')!;
+    const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
+    expect(listReposTool.description).toContain('Use query for Zoekt-backed search');
+    expect(queryTool.description).toContain('SMART DISCOVERY');
+    expect(queryTool.description).toContain('When omitting "repo", pass "zoekt"');
+    expect(queryTool.inputSchema.properties.zoekt.description).toContain('Raw Zoekt query string');
+    expect(queryTool.inputSchema.properties.repo.description).toContain(
+      'If omitted in multi-repo setups, provide "zoekt"',
+    );
   });
 
   it('documents graph-first workflow before source snippets', () => {
@@ -124,13 +129,10 @@ describe('GITNEXUS_TOOLS', () => {
     expect(snippetTool.description).toContain('roughly 10-20 relevant lines');
   });
 
-  it('documents precise Zoekt filters and bounded context lines', () => {
-    const tool = GITNEXUS_TOOLS.find((t) => t.name === 'zoekt_search')!;
+  it('documents precise Zoekt filters on the unified query tool', () => {
+    const tool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
 
-    expect(tool.description).toContain('Use it as a precise locator');
-    expect(tool.description).toContain('wxdgTab file:kcServices.cs lang:csharp');
-    expect(tool.description).toContain('Avoid broad keyword-only searches');
-    expect(tool.inputSchema.properties.context_lines.description).toContain('Use 5-10 lines');
+    expect(tool.inputSchema.properties.zoekt.description).toContain('Raw Zoekt query string');
   });
 
   it('group tools without backend repo param omit repo property', () => {

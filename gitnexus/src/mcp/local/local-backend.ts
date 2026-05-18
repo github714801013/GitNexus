@@ -786,11 +786,6 @@ export class LocalBackend {
       return this.handleGroupTool(method, params || {});
     }
 
-    // Zoekt tools are repo-optional: Zoekt searches all indexed repos when no
-    // repo filter is given, so they must bypass resolveRepo() entirely.
-    if (method === 'zoekt_search') return this.zoektSearch(params || {});
-    if (method === 'zoekt_symbol') return this.zoektSymbol(params || {});
-
     const p = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
     if (
       (method === 'impact' || method === 'query' || method === 'context') &&
@@ -803,7 +798,11 @@ export class LocalBackend {
     // Multi-repo query support: if no repo provided and multiple exist,
     // discover relevant repos via Zoekt and merge results.
     if (method === 'query' && !p.repo && this.repos.size > 1) {
-      const discovered = await this.discoveryReposViaZoekt(params?.query as string);
+      const discoveryQuery =
+        typeof p.zoekt === 'string' && p.zoekt.trim().length > 0
+          ? p.zoekt
+          : (params?.query as string);
+      const discovered = await this.discoveryReposViaZoekt(discoveryQuery);
       if (discovered.length > 0) {
         console.error(
           `GitNexus: Auto-discovered ${discovered.length} repos for query: ${discovered.map((r) => r.name).join(', ')}`,
@@ -4105,53 +4104,6 @@ export class LocalBackend {
         filePath: s.filePath || s[2],
       })),
     };
-  }
-
-  private async zoektSearch(params: {
-    query: string;
-    repo?: string;
-    regex?: boolean;
-    case_sensitive?: boolean;
-    max_results?: number;
-    context_lines?: number;
-  }): Promise<string> {
-    const { ZoektClient, loadZoektConfig } = await import('../../core/search/zoekt-client.js');
-    const config = loadZoektConfig();
-    if (!config.enabled) {
-      return 'Zoekt search is disabled. Set ZOEKT_ENABLED=true or provide ZOEKT_ENDPOINTS to enable it.';
-    }
-    const client = new ZoektClient(config);
-    let q = (params as any).zoekt || params.query;
-    if (params.regex) q = `r:${q}`;
-    if (params.case_sensitive) q = `case:yes ${q}`;
-    const result = await client.search(q, {
-      repoFilter: params.repo,
-      maxDocDisplayCount: params.max_results ?? 50,
-      numContextLines: params.context_lines ?? 2,
-    });
-    return this.formatZoektResult(
-      result,
-      (params as any).zoekt || params.query || (params as any).symbol,
-    );
-  }
-
-  private async zoektSymbol(params: {
-    symbol: string;
-    kind?: string;
-    repo?: string;
-    max_results?: number;
-  }): Promise<string> {
-    const { ZoektClient, loadZoektConfig } = await import('../../core/search/zoekt-client.js');
-    const config = loadZoektConfig();
-    if (!config.enabled) {
-      return 'Zoekt symbol search is disabled. Set ZOEKT_ENABLED=true or provide ZOEKT_ENDPOINTS to enable it.';
-    }
-    const client = new ZoektClient(config);
-    const result = await client.symbolSearch(params.symbol, params.kind ?? 'all', {
-      repoFilter: params.repo,
-      maxDocDisplayCount: params.max_results ?? 50,
-    });
-    return this.formatZoektResult(result, (params as any).query || (params as any).symbol);
   }
 
   private formatZoektResult(
