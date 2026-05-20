@@ -107,6 +107,30 @@ describe('mountMCPEndpoints close handling', () => {
     expect(closeMock).not.toHaveBeenCalled();
   });
 
+  it('does not re-enter transport close when protocol cleanup closes the transport', async () => {
+    const { app, handlers } = createApp();
+    mountMCPEndpoints(app as any, {} as any);
+
+    await handlers['GET /sse']({ headers: {} }, {});
+    const transport = lastTransport;
+    let depth = 0;
+    transport.close.mockImplementation(async () => {
+      depth += 1;
+      if (depth > 1) {
+        throw new RangeError('Maximum call stack size exceeded');
+      }
+      transport.onclose?.();
+      depth -= 1;
+    });
+
+    expect(() => transport.onclose?.()).not.toThrow();
+    await Promise.resolve();
+
+    expect(transport.close).not.toHaveBeenCalled();
+    expect(protocolOncloseMock).toHaveBeenCalledTimes(1);
+    expect(closeMock).not.toHaveBeenCalled();
+  });
+
   it('returns 400 when sessionId is missing or invalid', async () => {
     const { app, handlers } = createApp();
     mountMCPEndpoints(app as any, {} as any);
