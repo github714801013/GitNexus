@@ -733,6 +733,34 @@ export class LocalBackend {
     return [];
   }
 
+  private parseHeadScope(head: unknown): { exact: string[]; prefixes: string[] } | null {
+    const values =
+      typeof head === 'string'
+        ? head.split(',')
+        : Array.isArray(head)
+          ? head.filter((value): value is string => typeof value === 'string')
+          : [];
+    const normalized = values.map((value) => value.trim().toLowerCase()).filter(Boolean);
+    if (normalized.length === 0) return null;
+    return {
+      exact: normalized.filter((value) => !value.endsWith('*')),
+      prefixes: normalized
+        .filter((value) => value.endsWith('*'))
+        .map((value) => value.slice(0, -1)),
+    };
+  }
+
+  private matchesHeadScope(
+    handle: RepoHandle,
+    scope: { exact: string[]; prefixes: string[] },
+  ): boolean {
+    const values = [handle.id, handle.name, handle.repoPath].map((value) => value.toLowerCase());
+    return values.some(
+      (value) =>
+        scope.exact.includes(value) || scope.prefixes.some((prefix) => value.startsWith(prefix)),
+    );
+  }
+
   /**
    * Merge results from multiple single-repo query calls into one unified response.
    */
@@ -801,6 +829,7 @@ export class LocalBackend {
     }
 
     const p = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
+    const headScope = this.parseHeadScope(p.head);
     if (
       (method === 'impact' || method === 'query' || method === 'context') &&
       typeof p.repo === 'string' &&
@@ -816,7 +845,9 @@ export class LocalBackend {
         typeof p.zoekt === 'string' && p.zoekt.trim().length > 0
           ? p.zoekt
           : (params?.query as string);
-      const discovered = await this.discoveryReposViaZoekt(discoveryQuery);
+      const discovered = (await this.discoveryReposViaZoekt(discoveryQuery)).filter((repo) =>
+        headScope ? this.matchesHeadScope(repo, headScope) : true,
+      );
       if (discovered.length > 0) {
         console.error(
           `GitNexus: Auto-discovered ${discovered.length} repos for query: ${discovered.map((r) => r.name).join(', ')}`,

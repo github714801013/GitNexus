@@ -13,7 +13,12 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
 import { createRequire } from 'node:module';
-import { loadMeta, listRegisteredRepos, getStoragePath } from '../storage/repo-manager.js';
+import {
+  loadMeta,
+  listRegisteredRepos,
+  getStoragePath,
+  registerRepo,
+} from '../storage/repo-manager.js';
 import {
   executeQuery,
   executePrepared,
@@ -34,6 +39,16 @@ import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
+import {
+  WebhookWorktreeError,
+  assertEnvAllowed,
+  assertSafeSegment,
+  buildRegistryName,
+  copyBootstrapIndex,
+  ensureLocalWorktree,
+  getManagedWorktreePath,
+  parseAllowedEnvs,
+} from './webhook-worktree.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
@@ -482,6 +497,79 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   const releaseRepoLock = (repoPath: string): void => {
     activeRepoPaths.delete(repoPath);
+  };
+
+  const createAnalyzeWorker = (
+    job: ReturnType<JobManager['createJob']>,
+    targetPath: string,
+    options: any,
+  ) => {
+    const analyzeLockKey = getStoragePath(targetPath);
+    const callerPath = fileURLToPath(import.meta.url);
+    const isDev = callerPath.endsWith('.ts');
+    const workerFile = isDev ? 'analyze-worker.ts' : 'analyze-worker.js';
+    const workerPath = path.join(path.dirname(callerPath), workerFile);
+    const tsxHookArgs: string[] = isDev
+      ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href]
+      : [];
+
+    const child = fork(workerPath, [], {
+      execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+
+    let stderrChunks = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderrChunks += chunk.toString();
+      if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
+    });
+
+    child.on('message', (msg: any) => {
+      if (msg.type === 'progress') {
+        jobManager.updateJob(job.id, {
+          status: 'analyzing',
+          progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
+        });
+      } else if (msg.type === 'complete') {
+        releaseRepoLock(analyzeLockKey);
+        backend
+          .refreshListReposCache()
+          .then(() => {
+            jobManager.updateJob(job.id, { status: 'complete', repoName: msg.result.repoName });
+          })
+          .catch((err) => {
+            console.error('backend.init() failed after analyze:', err);
+            jobManager.updateJob(job.id, {
+              status: 'failed',
+              error: 'Server failed to reload after analysis. Try again.',
+            });
+          });
+      } else if (msg.type === 'error') {
+        releaseRepoLock(analyzeLockKey);
+        jobManager.updateJob(job.id, { status: 'failed', error: msg.message });
+      }
+    });
+
+    child.on('error', (err) => {
+      releaseRepoLock(analyzeLockKey);
+      jobManager.updateJob(job.id, {
+        status: 'failed',
+        error: `Worker process error: ${err.message}`,
+      });
+    });
+
+    child.on('exit', (code) => {
+      const currentJob = jobManager.getJob(job.id);
+      if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed') return;
+      releaseRepoLock(analyzeLockKey);
+      jobManager.updateJob(job.id, {
+        status: 'failed',
+        error: `Worker crashed (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
+      });
+    });
+
+    jobManager.registerChild(job.id, child);
+    child.send({ type: 'start', repoPath: targetPath, options });
   };
 
   /**
@@ -1154,6 +1242,140 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // ── Analyze API ──────────────────────────────────────────────────────
+
+  // POST /api/webhook/:env/index — create an env worktree and refresh it in the background
+  app.post('/api/webhook/:env/index', async (req, res) => {
+    let worktreePath: string | undefined;
+    try {
+      const env = String(req.params.env ?? '')
+        .trim()
+        .toLowerCase();
+      const allowedEnvs = parseAllowedEnvs(process.env.GITNEXUS_WEBHOOK_ALLOWED_ENVS);
+      assertEnvAllowed(env, allowedEnvs);
+
+      const {
+        repoUrl,
+        projectName,
+        branch,
+        baseRef,
+        forceRefresh,
+        embeddings,
+      }: {
+        repoUrl?: unknown;
+        projectName?: unknown;
+        branch?: unknown;
+        baseRef?: unknown;
+        forceRefresh?: unknown;
+        embeddings?: unknown;
+      } = req.body ?? {};
+
+      if (repoUrl !== undefined && typeof repoUrl !== 'string') {
+        res.status(400).json({ error: '"repoUrl" must be a string' });
+        return;
+      }
+      if (typeof projectName !== 'string' || projectName.trim().length === 0) {
+        res.status(400).json({ error: 'Missing "projectName"' });
+        return;
+      }
+      if (typeof branch !== 'string' || branch.trim().length === 0) {
+        res.status(400).json({ error: 'Missing "branch"' });
+        return;
+      }
+      if (baseRef !== undefined && typeof baseRef !== 'string') {
+        res.status(400).json({ error: '"baseRef" must be a string' });
+        return;
+      }
+      const repoUrlValue = repoUrl as string | undefined;
+      const projectNameValue = projectName;
+      const branchValue = branch;
+      const baseRefValue = baseRef as string | undefined;
+
+      assertSafeSegment(projectNameValue, 'projectName');
+      assertSafeSegment(branchValue, 'branch');
+      if (baseRefValue) assertSafeSegment(baseRefValue, 'baseRef');
+
+      const registryName = buildRegistryName(env, projectNameValue);
+      const repos = await listRegisteredRepos();
+      let mainRepoPath =
+        repos.find((repo) => repo.name.toLowerCase() === projectNameValue.toLowerCase())?.path ??
+        repos.find(
+          (repo) => path.basename(repo.path).toLowerCase() === projectNameValue.toLowerCase(),
+        )?.path;
+
+      if (!mainRepoPath) {
+        if (!repoUrlValue) {
+          res
+            .status(400)
+            .json({ error: 'Provide "repoUrl" when the main project is not registered' });
+          return;
+        }
+        mainRepoPath = getCloneDir(projectNameValue);
+        await cloneOrPull(repoUrlValue, mainRepoPath);
+      }
+
+      worktreePath = getManagedWorktreePath(env, projectNameValue);
+      const worktree = await ensureLocalWorktree({
+        mainRepoPath,
+        worktreePath,
+        branch: branchValue,
+        baseRef: baseRefValue || undefined,
+      });
+
+      const copied = await copyBootstrapIndex({
+        sourceRepoPath: mainRepoPath,
+        worktreePath: worktree.worktreePath,
+        branch: worktree.branch,
+        commit: worktree.commit,
+        registryName,
+        register: registerRepo,
+      });
+
+      const job = jobManager.createJob({ repoUrl: repoUrlValue, repoPath: worktree.worktreePath });
+      if (job.status === 'queued') {
+        const analyzeLockKey = getStoragePath(worktree.worktreePath);
+        const lockErr = acquireRepoLock(analyzeLockKey);
+        if (lockErr) {
+          res.status(409).json({ error: lockErr });
+          return;
+        }
+        jobManager.updateJob(job.id, {
+          repoPath: worktree.worktreePath,
+          repoName: registryName,
+          status: 'analyzing',
+          progress: {
+            phase: copied ? 'warming' : 'analyzing',
+            percent: copied ? 10 : 0,
+            message: copied
+              ? 'Bootstrap index copied; refreshing in background...'
+              : 'Analyzing worktree...',
+          },
+        });
+        createAnalyzeWorker(job, worktree.worktreePath, {
+          force: !!forceRefresh,
+          embeddings: embeddings === undefined ? undefined : !!embeddings,
+          registryName,
+        });
+      }
+
+      res.status(202).json({
+        status: copied ? 'warming' : 'analyzing',
+        repo: registryName,
+        worktreePath: worktree.worktreePath,
+        refreshJobId: job.id,
+      });
+    } catch (err: any) {
+      if (worktreePath) releaseRepoLock(getStoragePath(worktreePath));
+      if (err instanceof WebhookWorktreeError) {
+        res.status(err.statusCode).json({ error: err.message });
+        return;
+      }
+      if (err.message?.includes('已有任务正在执行')) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      res.status(500).json({ error: err.message || 'Failed to start webhook index' });
+    }
+  });
 
   // POST /api/analyze — start a new analysis job
   app.post('/api/analyze', async (req, res) => {

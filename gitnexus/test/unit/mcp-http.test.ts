@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { mountMCPEndpoints } from '../../src/server/mcp-http.js';
+import { createMCPServer } from '../../src/mcp/server.js';
 
 const closeMock = vi.fn();
 const connectMock = vi.fn();
@@ -156,5 +157,25 @@ describe('mountMCPEndpoints close handling', () => {
 
     expect(res.status).toHaveBeenCalledWith(404);
     expect(transport.handlePostMessage).not.toHaveBeenCalled();
+  });
+
+  it('passes project and env scoping headers into the MCP server', async () => {
+    const { app, handlers } = createApp();
+    mountMCPEndpoints(app as any, {} as any);
+
+    await handlers['GET /sse'](
+      {
+        headers: {
+          projects: 'dev-api, saas-api',
+          'gitnexus-env': 'dev',
+        },
+      },
+      {},
+    );
+
+    expect(createMCPServer).toHaveBeenCalledWith(
+      {},
+      { projects: ['dev-api', 'saas-api'], envs: ['dev'] },
+    );
   });
 });

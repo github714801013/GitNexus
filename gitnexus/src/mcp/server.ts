@@ -80,11 +80,23 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
   }
 }
 
+export interface MCPRepoScope {
+  projects?: string[];
+  envs?: string[];
+}
+
+type MCPRepoScopeInput = string[] | MCPRepoScope;
+
+const normalizeScopeValues = (values: string[] | undefined): string[] | undefined => {
+  const normalized = values?.map((p) => p.trim().toLowerCase()).filter((p) => p.length > 0);
+  return normalized && normalized.length > 0 ? normalized : undefined;
+};
+
 /**
  * Create a configured MCP Server with all handlers registered.
  * Transport-agnostic — caller connects the desired transport.
  */
-export function createMCPServer(backend: LocalBackend, projectWhitelist?: string[]): Server {
+export function createMCPServer(backend: LocalBackend, repoScope?: MCPRepoScopeInput): Server {
   const require = createRequire(import.meta.url);
   const pkgVersion: string = require('../../package.json').version;
   const server = new Server(
@@ -101,21 +113,32 @@ export function createMCPServer(backend: LocalBackend, projectWhitelist?: string
     },
   );
 
-  // Normalize whitelist for efficient lookups (case-insensitive)
-  const whitelist = projectWhitelist
-    ?.map((p) => p.trim().toLowerCase())
-    .filter((p) => p.length > 0);
+  // Normalize scope for efficient lookups (case-insensitive).
+  const scope = Array.isArray(repoScope) ? { projects: repoScope } : (repoScope ?? {});
+  const whitelist = normalizeScopeValues(scope.projects);
+  const envPrefixes = normalizeScopeValues(scope.envs)?.map((env) => `${env}-`);
   const isWhitelisted = (name: string, id?: string, path?: string) => {
-    if (!whitelist || whitelist.length === 0) return true;
+    if ((!whitelist || whitelist.length === 0) && (!envPrefixes || envPrefixes.length === 0)) {
+      return true;
+    }
     const n = name.toLowerCase();
     const i = id?.toLowerCase();
     const p = path?.toLowerCase();
-    return (
+    const matchesProject =
+      !whitelist ||
       whitelist.includes(n) ||
       (i && whitelist.includes(i)) ||
-      (p && (whitelist.includes(p) || (p.startsWith('/') && whitelist.includes(p.substring(1)))))
-    );
+      (p && (whitelist.includes(p) || (p.startsWith('/') && whitelist.includes(p.substring(1)))));
+    const matchesEnv =
+      !envPrefixes ||
+      envPrefixes.some(
+        (prefix) =>
+          n.startsWith(prefix) || (i && i.startsWith(prefix)) || (p && p.startsWith(prefix)),
+      );
+    return Boolean(matchesProject && matchesEnv);
   };
+  const hasScope = (whitelist && whitelist.length > 0) || (envPrefixes && envPrefixes.length > 0);
+  const headScope = [...(whitelist ?? []), ...(envPrefixes?.map((prefix) => `${prefix}*`) ?? [])];
 
   // Handle list resources request
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
@@ -215,13 +238,13 @@ export function createMCPServer(backend: LocalBackend, projectWhitelist?: string
 
     try {
       // Inject whitelist into tool params if it's a multi-repo search tool
-      const toolParams = whitelist ? { ...args, head: whitelist } : args;
+      const toolParams = hasScope ? { ...args, head: headScope } : args;
 
       const result = await backend.callTool(name, toolParams);
 
       // Recursive filter to remove any mention of non-whitelisted repos in results
       const filterResult = (val: any): any => {
-        if (!whitelist || whitelist.length === 0) return val;
+        if (!hasScope) return val;
         if (Array.isArray(val)) {
           // Special case: list_repos output is an array of repo objects
           if (name === 'list_repos') {

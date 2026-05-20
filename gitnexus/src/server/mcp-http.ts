@@ -10,27 +10,36 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { createMCPServer } from '../mcp/server.js';
 import type { LocalBackend } from '../mcp/local/local-backend.js';
 
+const parseCsvHeader = (value: Request['headers'][string]): string[] | undefined => {
+  if (typeof value !== 'string' || value.trim().length === 0) return undefined;
+  const parsed = value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parsed.length > 0 ? parsed : undefined;
+};
+
 export function mountMCPEndpoints(app: Express, backend: LocalBackend): () => Promise<void> {
   // Map to track active transports for message routing
   const transports = new Map<string, SSEServerTransport>();
 
   app.get('/sse', async (req: Request, res: Response) => {
     // 1. Capture scoping headers from the initial GET request
-    const projectsHeader = req.headers['projects'];
-    let whitelist: string[] | undefined;
-    if (typeof projectsHeader === 'string' && projectsHeader.trim().length > 0) {
-      whitelist = projectsHeader
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      console.log(`[MCP] New session with project whitelist: ${whitelist.join(', ')}`);
+    const projects = parseCsvHeader(req.headers['projects']);
+    const envs = parseCsvHeader(req.headers['gitnexus-env']);
+    const scope = projects || envs ? { projects, envs } : undefined;
+    if (projects) {
+      console.log(`[MCP] New session with project whitelist: ${projects.join(', ')}`);
+    }
+    if (envs) {
+      console.log(`[MCP] New session with env scope: ${envs.join(', ')}`);
     }
 
     // 2. Initialize standard SSE transport
     const transport = new SSEServerTransport('/api/mcp/messages', res);
 
     // 3. Create a dedicated server instance for this session with its own whitelist
-    const server = createMCPServer(backend, whitelist);
+    const server = createMCPServer(backend, scope);
 
     await server.connect(transport);
 
