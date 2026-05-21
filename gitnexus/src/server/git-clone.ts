@@ -191,6 +191,76 @@ export async function cloneOrPull(
   return targetDir;
 }
 
+/**
+ * Synchronize a webhook-managed mirror to a remote branch.
+ *
+ * This is intentionally stronger than cloneOrPull(): webhook mirrors are cache/index
+ * inputs, so local divergent commits should not block startup indexing.
+ */
+export async function cloneOrResetToBranch(
+  url: string,
+  targetDir: string,
+  branch: string,
+  onProgress?: (progress: CloneProgress) => void,
+): Promise<string> {
+  assertSafeGitRef(branch, 'branch');
+  validateGitUrl(url);
+  const authenticatedUrl = getAuthenticatedGitUrl(url);
+  const exists = await fs.access(path.join(targetDir, '.git')).then(
+    () => true,
+    () => false,
+  );
+
+  if (exists) {
+    onProgress?.({ phase: 'pulling', message: `Synchronizing ${branch}...` });
+    await fs.rm(path.join(targetDir, '.git', 'index.lock'), { force: true });
+    for (const args of buildWebhookBranchSyncCommands(authenticatedUrl, branch)) {
+      await runGit(args, targetDir);
+    }
+  } else {
+    await fs.mkdir(path.dirname(targetDir), { recursive: true });
+    onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
+    await runGit(['clone', '--depth', '1', '--branch', branch, authenticatedUrl, targetDir]);
+  }
+
+  return targetDir;
+}
+
+export function buildWebhookBranchSyncCommands(url: string, branch: string): string[][] {
+  assertSafeGitRef(branch, 'branch');
+  return [
+    ['remote', 'set-url', 'origin', url],
+    ['fetch', 'origin', branch, '--depth', '1'],
+    ['reset', '--hard', 'FETCH_HEAD'],
+    ['clean', '-fd', '-e', '.gitnexus', '-e', '.gitnexus/'],
+    ['checkout', '-B', branch, 'FETCH_HEAD'],
+    ['reset', '--hard', 'FETCH_HEAD'],
+    ['clean', '-fd', '-e', '.gitnexus', '-e', '.gitnexus/'],
+  ];
+}
+
+export function getAuthenticatedGitUrl(url: string): string {
+  const token = process.env.GITEA_TOKEN;
+  if (!token || !url.startsWith('http')) return url;
+  const parsed = new URL(url);
+  parsed.username = token;
+  parsed.password = '';
+  return parsed.toString();
+}
+
+function assertSafeGitRef(value: string, fieldName: string): void {
+  if (
+    !value ||
+    value.startsWith('-') ||
+    value.startsWith('/') ||
+    value.endsWith('/') ||
+    value.includes('..') ||
+    /[\s\\~^:?*[\]\x00-\x1F\x7F]/.test(value)
+  ) {
+    throw new Error(`Invalid ${fieldName}`);
+  }
+}
+
 function runGit(args: string[], cwd?: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn('git', args, {
@@ -214,7 +284,7 @@ function runGit(args: string[], cwd?: string): Promise<void> {
       if (code === 0) resolve();
       else {
         // Log full stderr internally but don't expose it to API callers (SSRF mitigation)
-        if (stderr.trim()) console.error(`git ${args[0]} stderr: ${stderr.trim()}`);
+        if (stderr.trim()) console.error(`git ${args[0]} stderr: ${sanitizeGitStderr(stderr)}`);
         reject(new Error(`git ${args[0]} failed (exit code ${code})`));
       }
     });
@@ -223,4 +293,9 @@ function runGit(args: string[], cwd?: string): Promise<void> {
       reject(new Error(`Failed to spawn git: ${err.message}`));
     });
   });
+}
+
+function sanitizeGitStderr(stderr: string): string {
+  const token = process.env.GITEA_TOKEN;
+  return token ? stderr.trim().replaceAll(token, '****') : stderr.trim();
 }

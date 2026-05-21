@@ -2,7 +2,7 @@
  * Standard MCP over SSE
  *
  * Mounts the GitNexus MCP server on Express using standard SSEServerTransport.
- * Supports per-session scoping via 'projects' header during SSE establishment.
+ * Supports per-session scoping via 'projects' and 'env' headers during SSE establishment.
  */
 
 import type { Express, Request, Response } from 'express';
@@ -26,7 +26,7 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): () => Pr
   app.get('/sse', async (req: Request, res: Response) => {
     // 1. Capture scoping headers from the initial GET request
     const projects = parseCsvHeader(req.headers['projects']);
-    const envs = parseCsvHeader(req.headers['gitnexus-env']);
+    const envs = parseCsvHeader(req.headers['env']);
     const scope = projects || envs ? { projects, envs } : undefined;
     if (projects) {
       console.log(`[MCP] New session with project whitelist: ${projects.join(', ')}`);

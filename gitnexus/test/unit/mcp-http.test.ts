@@ -167,7 +167,7 @@ describe('mountMCPEndpoints close handling', () => {
       {
         headers: {
           projects: 'dev-api, saas-api',
-          'gitnexus-env': 'dev',
+          env: 'dev',
         },
       },
       {},

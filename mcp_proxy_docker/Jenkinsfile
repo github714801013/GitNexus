@@ -33,7 +33,7 @@ pipeline {
                     // 但可以做远程探测
                     sleep 5
                     // 假设远程主机可访问
-                    // sh 'curl -f http://10.1.250.157:1347/health || exit 1'
+                    // sh 'curl -f http://10.1.250.157:1347/status || exit 1'
                 }
             }
         }

@@ -21,7 +21,7 @@ local_pull_name="localhost:${REGISTRY_PORT}/common/${IMAGE_NAME}:${version}"
 echo "=== 步骤 2: 本地构建 Docker 镜像 ==="
 export DOCKER_BUILDKIT=1
 docker build --network=host --progress=plain \
-    --build-arg VITE_BACKEND_URL="http://${REMOTE_HOST}:1349" \
+    --build-arg VITE_BACKEND_URL="http://${REMOTE_HOST}:1347" \
     -t "${full_image_name}" \
     -f mcp_proxy_docker/Dockerfile .
 
@@ -67,7 +67,7 @@ ssh -o StrictHostKeyChecking=no -R "${REGISTRY_PORT}:${REGISTRY_HOST}:${REGISTRY
     echo "启动新容器 (代理服务 & 挂载模型目录)..."
     docker run -d --name "${IMAGE_NAME}" \
         --gpus all \
-        -p 1347:1347 -p 1348:1348 -p 1349:1349 -p 1350:1350 \
+        -p 1347:1347 -p 1350:1350 \
         -v /home/ji99/gitnexus:/projects \
         -v "${REMOTE_PATH}/models:/app/models" \
         --restart always \

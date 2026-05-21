@@ -67,7 +67,7 @@ ssh -o StrictHostKeyChecking=no \
     echo "启动新容器 (CPU 模式 & 远程 Embedding)..."
     docker run -d --name "${IMAGE_NAME}" \
         --security-opt seccomp=unconfined \
-        -p 1347:1347 -p 1348:1348 -p 1349:1349 -p 1350:1350 \
+        -p 1347:1347 -p 1350:1350 \
         -v "${PROJECTS_PATH}:/projects" \
         -v "${DATA_PATH}:/root/.gitnexus" \
         --restart always \

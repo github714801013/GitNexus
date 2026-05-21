@@ -23,7 +23,6 @@ RUN if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
     curl \
     ca-certificates \
     python3 \
-    python3-pip \
     git \
     build-essential \
     libgomp1 \
@@ -47,8 +46,8 @@ ENV HF_ENDPOINT="https://hf-mirror.com"
 
 WORKDIR /app
 
-# 安装 mcp-proxy 和 serve
-RUN npm install -g mcp-proxy serve --registry=http://registry.npmmirror.com
+# 安装 serve（用于托管前端）
+RUN npm install -g serve --registry=http://registry.npmmirror.com
 
 # 3. 复制项目文件
 COPY gitnexus ./gitnexus
@@ -80,17 +79,12 @@ ENV VITE_BACKEND_URL=${VITE_BACKEND_URL}
 RUN npm install --registry=http://registry.npmmirror.com --no-audit --no-fund --ignore-scripts --legacy-peer-deps && \
     npx vite build
 
-# 7. Setup the Proxy Application (Python Side)
+# 7. Setup the Web UI proxy
 WORKDIR /app/mcp_proxy
-COPY ./mcp_proxy_docker/requirements.txt .
-RUN pip3 install --no-cache-dir -i http://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com --break-system-packages -r requirements.txt
-
-# Copy application code
-COPY ./mcp_proxy_docker/app ./app
 COPY ./mcp_proxy_docker/proxy.js ./proxy.js
 
 # Expose ports
-EXPOSE 1347 1348 1349 1350
+EXPOSE 1347 1350
 
 # Entrypoint script
 COPY ./mcp_proxy_docker/entrypoint.sh /entrypoint.sh

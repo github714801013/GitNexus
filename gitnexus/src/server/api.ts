@@ -18,6 +18,7 @@ import {
   listRegisteredRepos,
   getStoragePath,
   registerRepo,
+  unregisterRepo,
 } from '../storage/repo-manager.js';
 import {
   executeQuery,
@@ -38,7 +39,10 @@ import { mountMCPEndpoints } from './mcp-http.js';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
-import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
+import { waitForJobManagerIdle } from './analyze-job-wait.js';
+import { buildAnalyzeWorkerExecArgv } from './analyze-worker-options.js';
+import { extractRepoName, getCloneDir, cloneOrPull, cloneOrResetToBranch } from './git-clone.js';
+import { WebhookAnalyzeQueue } from './webhook-analyze-queue.js';
 import {
   WebhookWorktreeError,
   assertEnvAllowed,
@@ -46,8 +50,13 @@ import {
   buildRegistryName,
   copyBootstrapIndex,
   ensureLocalWorktree,
+  getGiteaWebhookRepoPath,
+  getLegacyManagedWorktreePath,
   getManagedWorktreePath,
+  getProjectsRoot,
+  parseGiteaWebhookRepo,
   parseAllowedEnvs,
+  upsertWebhookRepoConfig,
 } from './webhook-worktree.js';
 
 const _require = createRequire(import.meta.url);
@@ -482,6 +491,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   await backend.init();
   const cleanupMcp = mountMCPEndpoints(app, backend);
   const jobManager = new JobManager();
+  const webhookAnalyzeQueue = new WebhookAnalyzeQueue(1);
 
   // Shared repo lock — prevents concurrent analyze + embed on the same repo path,
   // which would corrupt LadybugDB (analyze calls closeLbug + initLbug while embed has queries in flight).
@@ -514,7 +524,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       : [];
 
     const child = fork(workerPath, [], {
-      execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
+      execArgv: buildAnalyzeWorkerExecArgv(tsxHookArgs),
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
 
@@ -571,6 +581,122 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     jobManager.registerChild(job.id, child);
     child.send({ type: 'start', repoPath: targetPath, options });
   };
+
+  const startAnalyzeForPath = (
+    repoPath: string,
+    params: {
+      repoUrl?: string;
+      repoName?: string;
+      force?: boolean;
+      embeddings?: boolean;
+      registryName?: string;
+    } = {},
+  ): ReturnType<JobManager['createJob']> => {
+    const job = jobManager.createJob({ repoUrl: params.repoUrl, repoPath });
+    if (job.status !== 'queued') return job;
+
+    const analyzeLockKey = getStoragePath(repoPath);
+    const lockErr = acquireRepoLock(analyzeLockKey);
+    if (lockErr) {
+      throw new Error(lockErr);
+    }
+
+    jobManager.updateJob(job.id, {
+      repoPath,
+      repoName: params.repoName,
+      status: 'analyzing',
+      progress: { phase: 'analyzing', percent: 0, message: 'Analyzing repository...' },
+    });
+    createAnalyzeWorker(job, repoPath, {
+      force: !!params.force,
+      embeddings: params.embeddings,
+      registryName: params.registryName,
+    });
+    return job;
+  };
+
+  const waitForAnalyzeJob = (jobId: string): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const current = jobManager.getJob(jobId);
+      if (current?.status === 'complete') {
+        resolve();
+        return;
+      }
+      if (current?.status === 'failed') {
+        reject(new Error(current.error || 'Analysis failed'));
+        return;
+      }
+      const unsubscribe = jobManager.onProgress(jobId, (progress) => {
+        if (progress.phase === 'complete') {
+          unsubscribe();
+          resolve();
+        } else if (progress.phase === 'failed') {
+          unsubscribe();
+          reject(new Error(progress.message || 'Analysis failed'));
+        }
+      });
+    });
+
+  const enqueueWebhookAnalyze = (
+    repoPath: string,
+    params: Parameters<typeof startAnalyzeForPath>[1] = {},
+    beforeAnalyze?: () => Promise<void>,
+  ) => {
+    let job: ReturnType<typeof startAnalyzeForPath> | undefined;
+    const queued = webhookAnalyzeQueue.enqueue({
+      key: path.resolve(repoPath),
+      run: async () => {
+        await beforeAnalyze?.();
+        await waitForJobManagerIdle(jobManager);
+        job = startAnalyzeForPath(repoPath, params);
+        await waitForAnalyzeJob(job.id);
+      },
+    });
+    return {
+      status: queued.status,
+      get job() {
+        return job;
+      },
+      done: queued.done,
+    };
+  };
+
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok', projectsRoot: getProjectsRoot() });
+  });
+
+  app.get('/status', (_req, res) => {
+    res.json({ status: 'ok', projectsRoot: getProjectsRoot() });
+  });
+
+  const scheduleStartupWebhookRepos = async (): Promise<void> => {
+    const projectsRoot = getProjectsRoot();
+    const reposFile = path.join(projectsRoot, 'repos.json');
+    let entries: any[] = [];
+    try {
+      const raw = await fs.readFile(reposFile, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) entries = parsed;
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry || typeof entry.full_name !== 'string') continue;
+      const repoPath = getGiteaWebhookRepoPath(projectsRoot, entry.full_name);
+      const cloneUrl = typeof entry.clone_url === 'string' ? entry.clone_url : undefined;
+      const branch = typeof entry.branch === 'string' ? entry.branch : 'master';
+      const repoName = path.basename(entry.full_name);
+      const queued = enqueueWebhookAnalyze(repoPath, { repoUrl: cloneUrl, repoName }, async () => {
+        if (cloneUrl) await cloneOrResetToBranch(cloneUrl, repoPath, branch);
+      });
+      queued.done.catch((err) => {
+        console.error(`Startup webhook indexing failed for ${entry.full_name}:`, err);
+      });
+    }
+  };
+
+  void scheduleStartupWebhookRepos();
 
   /**
    * Maximum time the hold-queue will wait for an active analysis job to complete.
@@ -1243,8 +1369,50 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // ── Analyze API ──────────────────────────────────────────────────────
 
-  // POST /api/webhook/:env/index — create an env worktree and refresh it in the background
-  app.post('/api/webhook/:env/index', async (req, res) => {
+  // POST /webhook/gitea — compatibility route for the previous Python webhook service.
+  app.post('/webhook/gitea', async (req, res) => {
+    try {
+      const repo = parseGiteaWebhookRepo(req.body);
+      const projectsRoot = getProjectsRoot();
+      const repoPath = getGiteaWebhookRepoPath(projectsRoot, repo.fullName);
+      const reposFile = path.join(projectsRoot, 'repos.json');
+
+      await upsertWebhookRepoConfig(reposFile, {
+        full_name: repo.fullName,
+        clone_url: repo.cloneUrl,
+        branch: repo.branch || 'master',
+      });
+
+      if (repo.cloneUrl) {
+        await cloneOrResetToBranch(repo.cloneUrl, repoPath, repo.branch || 'master');
+      }
+
+      const queued = enqueueWebhookAnalyze(repoPath, {
+        repoUrl: repo.cloneUrl,
+        repoName: path.basename(repo.fullName),
+      });
+
+      res.json({
+        status: queued.status,
+        repository: repo.fullName,
+        path: repoPath,
+        jobId: queued.job?.id,
+      });
+    } catch (err: any) {
+      if (err instanceof WebhookWorktreeError) {
+        res.status(err.statusCode).json({ error: err.message });
+        return;
+      }
+      if (err.message?.includes('已有任务正在执行') || err.message?.includes('already active')) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      res.status(500).json({ error: err.message || 'Failed to process Gitea webhook' });
+    }
+  });
+
+  // POST /webhook/:env/index — create an env worktree from a Gitea webhook payload.
+  app.post('/webhook/:env/index', async (req, res) => {
     let worktreePath: string | undefined;
     try {
       const env = String(req.params.env ?? '')
@@ -1253,72 +1421,33 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const allowedEnvs = parseAllowedEnvs(process.env.GITNEXUS_WEBHOOK_ALLOWED_ENVS);
       assertEnvAllowed(env, allowedEnvs);
 
-      const {
-        repoUrl,
-        projectName,
-        branch,
-        baseRef,
-        forceRefresh,
-        embeddings,
-      }: {
-        repoUrl?: unknown;
-        projectName?: unknown;
-        branch?: unknown;
-        baseRef?: unknown;
-        forceRefresh?: unknown;
-        embeddings?: unknown;
-      } = req.body ?? {};
-
-      if (repoUrl !== undefined && typeof repoUrl !== 'string') {
-        res.status(400).json({ error: '"repoUrl" must be a string' });
-        return;
-      }
-      if (typeof projectName !== 'string' || projectName.trim().length === 0) {
-        res.status(400).json({ error: 'Missing "projectName"' });
-        return;
-      }
-      if (typeof branch !== 'string' || branch.trim().length === 0) {
-        res.status(400).json({ error: 'Missing "branch"' });
-        return;
-      }
-      if (baseRef !== undefined && typeof baseRef !== 'string') {
-        res.status(400).json({ error: '"baseRef" must be a string' });
-        return;
-      }
-      const repoUrlValue = repoUrl as string | undefined;
-      const projectNameValue = projectName;
-      const branchValue = branch;
-      const baseRefValue = baseRef as string | undefined;
+      const repo = parseGiteaWebhookRepo(req.body);
+      const projectsRoot = getProjectsRoot();
+      const mainRepoPath = getGiteaWebhookRepoPath(projectsRoot, repo.fullName);
+      const reposFile = path.join(projectsRoot, 'repos.json');
+      const projectNameValue = path.basename(repo.fullName);
+      const repoUrlValue = repo.cloneUrl;
+      const sourceBranch = repo.branch || 'master';
 
       assertSafeSegment(projectNameValue, 'projectName');
-      assertSafeSegment(branchValue, 'branch');
-      if (baseRefValue) assertSafeSegment(baseRefValue, 'baseRef');
-
       const registryName = buildRegistryName(env, projectNameValue);
-      const repos = await listRegisteredRepos();
-      let mainRepoPath =
-        repos.find((repo) => repo.name.toLowerCase() === projectNameValue.toLowerCase())?.path ??
-        repos.find(
-          (repo) => path.basename(repo.path).toLowerCase() === projectNameValue.toLowerCase(),
-        )?.path;
 
-      if (!mainRepoPath) {
-        if (!repoUrlValue) {
-          res
-            .status(400)
-            .json({ error: 'Provide "repoUrl" when the main project is not registered' });
-          return;
-        }
-        mainRepoPath = getCloneDir(projectNameValue);
-        await cloneOrPull(repoUrlValue, mainRepoPath);
+      await upsertWebhookRepoConfig(reposFile, {
+        full_name: repo.fullName,
+        clone_url: repo.cloneUrl,
+        branch: sourceBranch,
+      });
+
+      if (repoUrlValue) {
+        await cloneOrResetToBranch(repoUrlValue, mainRepoPath, sourceBranch);
       }
 
-      worktreePath = getManagedWorktreePath(env, projectNameValue);
+      worktreePath = getManagedWorktreePath(mainRepoPath, env, projectNameValue);
       const worktree = await ensureLocalWorktree({
         mainRepoPath,
         worktreePath,
-        branch: branchValue,
-        baseRef: baseRefValue || undefined,
+        branch: registryName,
+        baseRef: `origin/${sourceBranch}`,
       });
 
       const copied = await copyBootstrapIndex({
@@ -1327,41 +1456,37 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         branch: worktree.branch,
         commit: worktree.commit,
         registryName,
-        register: registerRepo,
+        register: async (repoPath, meta, opts) => {
+          const legacyWorktreePath = getLegacyManagedWorktreePath(env, projectNameValue);
+          if (path.resolve(legacyWorktreePath) !== path.resolve(repoPath)) {
+            await unregisterRepo(legacyWorktreePath);
+          }
+          return registerRepo(repoPath, meta, opts);
+        },
       });
 
-      const job = jobManager.createJob({ repoUrl: repoUrlValue, repoPath: worktree.worktreePath });
-      if (job.status === 'queued') {
-        const analyzeLockKey = getStoragePath(worktree.worktreePath);
-        const lockErr = acquireRepoLock(analyzeLockKey);
-        if (lockErr) {
-          res.status(409).json({ error: lockErr });
-          return;
-        }
-        jobManager.updateJob(job.id, {
-          repoPath: worktree.worktreePath,
-          repoName: registryName,
-          status: 'analyzing',
+      const queued = enqueueWebhookAnalyze(worktree.worktreePath, {
+        repoUrl: repoUrlValue,
+        repoName: registryName,
+        force: false,
+        registryName,
+      });
+      if (queued.job?.status === 'analyzing' && copied) {
+        jobManager.updateJob(queued.job.id, {
           progress: {
-            phase: copied ? 'warming' : 'analyzing',
-            percent: copied ? 10 : 0,
-            message: copied
-              ? 'Bootstrap index copied; refreshing in background...'
-              : 'Analyzing worktree...',
+            phase: 'warming',
+            percent: 10,
+            message: 'Bootstrap index copied; refreshing in background...',
           },
-        });
-        createAnalyzeWorker(job, worktree.worktreePath, {
-          force: !!forceRefresh,
-          embeddings: embeddings === undefined ? undefined : !!embeddings,
-          registryName,
         });
       }
 
       res.status(202).json({
-        status: copied ? 'warming' : 'analyzing',
+        status: queued.status === 'deferred' ? 'deferred' : copied ? 'warming' : 'accepted',
+        repository: repo.fullName,
         repo: registryName,
         worktreePath: worktree.worktreePath,
-        refreshJobId: job.id,
+        refreshJobId: queued.job?.id,
       });
     } catch (err: any) {
       if (worktreePath) releaseRepoLock(getStoragePath(worktreePath));
@@ -1458,7 +1583,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
           // ── Worker fork with auto-retry ──────────────────────────────
           //
-          // Forks a child process with 8GB heap. If the worker crashes
+          // Forks a child process with configured heap. If the worker crashes
           // (OOM, native addon segfault, etc.), it retries up to
           // MAX_WORKER_RETRIES times with exponential backoff before
           // marking the job as permanently failed.
@@ -1481,7 +1606,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               return;
 
             const child = fork(workerPath, [], {
-              execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
+              execArgv: buildAnalyzeWorkerExecArgv(tsxHookArgs),
               stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
             });
 

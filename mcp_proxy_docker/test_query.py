@@ -6,7 +6,7 @@ import sys
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')
 
-url = "http://localhost:1349/api/query"
+url = "http://localhost:1347/api/query"
 headers = {"Content-Type": "application/json"}
 payload = {
     "cypher": 'MATCH (n) WHERE n.name CONTAINS "JiujiPeisongController" RETURN n.name, labels(n) LIMIT 5',

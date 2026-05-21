@@ -84,8 +84,6 @@ services:
     container_name: gitnexus-mcp-proxy
     ports:
       - '1347:1347'
-      - '1348:1348'
-      - '1349:1349'
       - '1350:1350'
     volumes:
       - /home/ji99/gitnexus:/projects
@@ -95,7 +93,6 @@ services:
       - zoekt-index:/data/zoekt-index
     environment:
       - GITEA_TOKEN=${GITEA_TOKEN}
-      - INDEXING_CONCURRENCY=3
       - GITNEXUS_EMBEDDING_URL=http://10.1.14.177:8001/v1
       - GITNEXUS_INDEX_EMBEDDING_URL=http://10.1.14.177:8002/v1
       - GITNEXUS_EMBEDDING_MODEL=Alibaba-NLP/gte-Qwen2-1.5B-instruct

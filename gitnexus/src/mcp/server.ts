@@ -92,6 +92,16 @@ const normalizeScopeValues = (values: string[] | undefined): string[] | undefine
   return normalized && normalized.length > 0 ? normalized : undefined;
 };
 
+const parseEnvList = (raw: string | undefined): string[] => {
+  return (raw ?? '')
+    .split(',')
+    .map((env) => env.trim().toLowerCase())
+    .filter((env) => env.length > 0);
+};
+
+const BASE_ENV_NAMES = new Set(['pro']);
+const DEFAULT_ENV_INDEX_PREFIXES = ['dev', 'saas'];
+
 /**
  * Create a configured MCP Server with all handlers registered.
  * Transport-agnostic — caller connects the desired transport.
@@ -116,28 +126,55 @@ export function createMCPServer(backend: LocalBackend, repoScope?: MCPRepoScopeI
   // Normalize scope for efficient lookups (case-insensitive).
   const scope = Array.isArray(repoScope) ? { projects: repoScope } : (repoScope ?? {});
   const whitelist = normalizeScopeValues(scope.projects);
-  const envPrefixes = normalizeScopeValues(scope.envs)?.map((env) => `${env}-`);
+  const envs = normalizeScopeValues(scope.envs);
+  const baseEnvRequested = envs?.some((env) => BASE_ENV_NAMES.has(env)) ?? false;
+  const envPrefixes = envs?.filter((env) => !BASE_ENV_NAMES.has(env)).map((env) => `${env}-`);
+  const knownEnvPrefixes = [
+    ...new Set([
+      ...DEFAULT_ENV_INDEX_PREFIXES,
+      ...parseEnvList(process.env.GITNEXUS_WEBHOOK_ALLOWED_ENVS),
+      ...parseEnvList(process.env.GITNEXUS_MCP_ENV_PREFIXES),
+      ...(envPrefixes?.map((prefix) => prefix.slice(0, -1)) ?? []),
+    ]),
+  ].map((env) => `${env}-`);
   const isWhitelisted = (name: string, id?: string, path?: string) => {
-    if ((!whitelist || whitelist.length === 0) && (!envPrefixes || envPrefixes.length === 0)) {
+    if (
+      (!whitelist || whitelist.length === 0) &&
+      (!envPrefixes || envPrefixes.length === 0) &&
+      !baseEnvRequested
+    ) {
       return true;
     }
     const n = name.toLowerCase();
     const i = id?.toLowerCase();
     const p = path?.toLowerCase();
+    const pathBaseName = p ? p.split(/[\\/]/).filter(Boolean).pop() : undefined;
     const matchesProject =
       !whitelist ||
       whitelist.includes(n) ||
       (i && whitelist.includes(i)) ||
       (p && (whitelist.includes(p) || (p.startsWith('/') && whitelist.includes(p.substring(1)))));
-    const matchesEnv =
-      !envPrefixes ||
+    const hasKnownEnvPrefix = knownEnvPrefixes.some(
+      (prefix) =>
+        n.startsWith(prefix) ||
+        (i && i.startsWith(prefix)) ||
+        (pathBaseName && pathBaseName.startsWith(prefix)),
+    );
+    const matchesEnvPrefix =
+      envPrefixes &&
       envPrefixes.some(
         (prefix) =>
-          n.startsWith(prefix) || (i && i.startsWith(prefix)) || (p && p.startsWith(prefix)),
+          n.startsWith(prefix) ||
+          (i && i.startsWith(prefix)) ||
+          (pathBaseName && pathBaseName.startsWith(prefix)),
       );
+    const matchesEnv = baseEnvRequested ? !hasKnownEnvPrefix : !envPrefixes || matchesEnvPrefix;
     return Boolean(matchesProject && matchesEnv);
   };
-  const hasScope = (whitelist && whitelist.length > 0) || (envPrefixes && envPrefixes.length > 0);
+  const hasScope =
+    (whitelist && whitelist.length > 0) ||
+    (envPrefixes && envPrefixes.length > 0) ||
+    baseEnvRequested;
   const headScope = [...(whitelist ?? []), ...(envPrefixes?.map((prefix) => `${prefix}*`) ?? [])];
 
   // Handle list resources request

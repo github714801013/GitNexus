@@ -7,7 +7,7 @@ import time
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')
 
-url = "http://localhost:1349/api/search"
+url = "http://localhost:1347/api/search"
 headers = {"Content-Type": "application/json"}
 payload = {
     "query": "配送",

@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { extractRepoName, getCloneDir, validateGitUrl } from '../../src/server/git-clone.js';
+import {
+  buildWebhookBranchSyncCommands,
+  extractRepoName,
+  getAuthenticatedGitUrl,
+  getCloneDir,
+  validateGitUrl,
+} from '../../src/server/git-clone.js';
 
 describe('git-clone', () => {
   describe('extractRepoName', () => {
@@ -120,6 +126,53 @@ describe('git-clone', () => {
 
     it('blocks 0.0.0.0', () => {
       expect(() => validateGitUrl('http://0.0.0.0/repo.git')).toThrow('private/internal');
+    });
+  });
+
+  describe('buildWebhookBranchSyncCommands', () => {
+    it('uses fetch/reset commands so divergent local webhook mirrors do not block indexing', () => {
+      expect(buildWebhookBranchSyncCommands('https://example.com/org/repo.git', 'dev')).toEqual([
+        ['remote', 'set-url', 'origin', 'https://example.com/org/repo.git'],
+        ['fetch', 'origin', 'dev', '--depth', '1'],
+        ['reset', '--hard', 'FETCH_HEAD'],
+        ['clean', '-fd', '-e', '.gitnexus', '-e', '.gitnexus/'],
+        ['checkout', '-B', 'dev', 'FETCH_HEAD'],
+        ['reset', '--hard', 'FETCH_HEAD'],
+        ['clean', '-fd', '-e', '.gitnexus', '-e', '.gitnexus/'],
+      ]);
+    });
+
+    it('rejects unsafe webhook branch names before building git commands', () => {
+      expect(() =>
+        buildWebhookBranchSyncCommands('https://example.com/org/repo.git', '../dev'),
+      ).toThrow('Invalid branch');
+    });
+  });
+
+  describe('getAuthenticatedGitUrl', () => {
+    it('injects GITEA_TOKEN for webhook git HTTP URLs without changing the persisted URL', () => {
+      const original = process.env.GITEA_TOKEN;
+      process.env.GITEA_TOKEN = 'secret-token';
+      try {
+        expect(getAuthenticatedGitUrl('https://code.9ji.com/org/repo.git')).toBe(
+          'https://secret-token@code.9ji.com/org/repo.git',
+        );
+      } finally {
+        if (original === undefined) delete process.env.GITEA_TOKEN;
+        else process.env.GITEA_TOKEN = original;
+      }
+    });
+
+    it('leaves URLs unchanged when GITEA_TOKEN is not configured', () => {
+      const original = process.env.GITEA_TOKEN;
+      delete process.env.GITEA_TOKEN;
+      try {
+        expect(getAuthenticatedGitUrl('https://code.9ji.com/org/repo.git')).toBe(
+          'https://code.9ji.com/org/repo.git',
+        );
+      } finally {
+        if (original !== undefined) process.env.GITEA_TOKEN = original;
+      }
     });
   });
 });

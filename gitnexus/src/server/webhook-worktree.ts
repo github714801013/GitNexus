@@ -40,14 +40,118 @@ export const assertSafeSegment = (value: string, fieldName: string): void => {
   }
 };
 
+export const assertSafeGitRef = (value: string, fieldName: string): void => {
+  if (
+    value.length === 0 ||
+    value.startsWith('-') ||
+    value.startsWith('/') ||
+    value.endsWith('/') ||
+    value.includes('..') ||
+    value.includes('\\') ||
+    /[\x00-\x20~^:?*[]/.test(value) ||
+    value.split('/').some((segment) => segment.length === 0 || segment === '.' || segment === '..')
+  ) {
+    throw new WebhookWorktreeError(`Invalid "${fieldName}"`);
+  }
+};
+
 export const buildRegistryName = (env: string, projectName: string): string => {
   assertSafeSegment(env, 'env');
   assertSafeSegment(projectName, 'projectName');
   return `${env.toLowerCase()}-${projectName}`;
 };
 
-export const getManagedWorktreePath = (env: string, projectName: string): string => {
+export const getManagedWorktreePath = (
+  mainRepoPath: string,
+  env: string,
+  projectName: string,
+): string => {
+  return path.join(path.dirname(mainRepoPath), buildRegistryName(env, projectName));
+};
+
+export const getLegacyManagedWorktreePath = (env: string, projectName: string): string => {
   return path.join(os.homedir(), '.gitnexus', 'worktrees', buildRegistryName(env, projectName));
+};
+
+export interface GiteaWebhookRepo {
+  fullName: string;
+  cloneUrl?: string;
+  branch?: string;
+}
+
+export const parseGiteaWebhookRepo = (payload: unknown): GiteaWebhookRepo => {
+  if (!payload || typeof payload !== 'object') {
+    throw new WebhookWorktreeError('Invalid JSON payload');
+  }
+  const body = payload as Record<string, unknown>;
+  const repository = body.repository;
+  if (!repository || typeof repository !== 'object') {
+    throw new WebhookWorktreeError('Repository full_name missing');
+  }
+  const repo = repository as Record<string, unknown>;
+  const fullName = repo.full_name;
+  if (typeof fullName !== 'string' || fullName.trim().length === 0) {
+    throw new WebhookWorktreeError('Repository full_name missing');
+  }
+  const cloneUrl = repo.clone_url;
+  if (cloneUrl !== undefined && typeof cloneUrl !== 'string') {
+    throw new WebhookWorktreeError('Repository clone_url must be a string');
+  }
+  const ref = body.ref;
+  const branch =
+    typeof ref === 'string' && ref.startsWith('refs/heads/') ? ref.slice(11) : undefined;
+
+  return {
+    fullName: fullName.trim(),
+    cloneUrl: typeof cloneUrl === 'string' ? cloneUrl.trim() || undefined : undefined,
+    branch: branch?.trim() || undefined,
+  };
+};
+
+export const getProjectsRoot = (): string => process.env.PROJECTS_ROOT || '/projects';
+
+export const getGiteaWebhookRepoPath = (projectsRoot: string, fullName: string): string => {
+  const segments = fullName.split('/');
+  if (segments.length === 0 || segments.some((segment) => segment.length === 0)) {
+    throw new WebhookWorktreeError('Invalid repository full_name');
+  }
+  for (const segment of segments) assertSafeSegment(segment, 'repository full_name');
+  return path.join(projectsRoot, ...segments);
+};
+
+export interface WebhookRepoConfigEntry {
+  full_name: string;
+  clone_url?: string;
+  branch?: string;
+}
+
+export const upsertWebhookRepoConfig = async (
+  reposFile: string,
+  entry: WebhookRepoConfigEntry,
+): Promise<void> => {
+  await fs.mkdir(path.dirname(reposFile), { recursive: true });
+  let repos: WebhookRepoConfigEntry[] = [];
+  try {
+    const raw = await fs.readFile(reposFile, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) repos = parsed;
+  } catch {
+    repos = [];
+  }
+
+  const existing = repos.find((repo) => repo.full_name === entry.full_name);
+  if (existing) {
+    if (entry.clone_url) existing.clone_url = entry.clone_url;
+    if (entry.branch) existing.branch = entry.branch;
+  } else {
+    repos.push({
+      full_name: entry.full_name,
+      clone_url: entry.clone_url,
+      branch: entry.branch || 'master',
+    });
+  }
+
+  await fs.writeFile(reposFile, JSON.stringify(repos, null, 2));
 };
 
 const pathExists = async (targetPath: string): Promise<boolean> =>
@@ -104,8 +208,8 @@ export interface EnsureWorktreeResult {
 export const ensureLocalWorktree = async (
   params: EnsureWorktreeParams,
 ): Promise<EnsureWorktreeResult> => {
-  assertSafeSegment(params.branch, 'branch');
-  if (params.baseRef) assertSafeSegment(params.baseRef, 'baseRef');
+  assertSafeGitRef(params.branch, 'branch');
+  if (params.baseRef) assertSafeGitRef(params.baseRef, 'baseRef');
 
   if (await pathExists(params.worktreePath)) {
     const gitDir = await runGit(['rev-parse', '--show-toplevel'], params.worktreePath);
@@ -115,6 +219,12 @@ export const ensureLocalWorktree = async (
   } else {
     await fs.mkdir(path.dirname(params.worktreePath), { recursive: true });
     const hasBranch = await runGit(['branch', '--list', params.branch], params.mainRepoPath);
+    if (!hasBranch && params.baseRef?.startsWith('origin/')) {
+      await runGit(
+        ['fetch', 'origin', params.baseRef.slice('origin/'.length), '--depth', '1'],
+        params.mainRepoPath,
+      );
+    }
     const args = hasBranch
       ? ['worktree', 'add', params.worktreePath, params.branch]
       : ['worktree', 'add', '-b', params.branch, params.worktreePath, params.baseRef ?? 'main'];

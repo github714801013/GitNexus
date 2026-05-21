@@ -94,6 +94,30 @@ describe('MCP Server with project whitelisting', () => {
     expect(repos[0].name).toBe('dev-api');
   });
 
+  it('should return base repositories and exclude env-prefixed indexes when pro env scope is provided', async () => {
+    vi.spyOn(backend, 'callTool').mockImplementation(async (method) => {
+      if (method === 'list_repos') {
+        return [
+          { name: 'dev-api', lastCommit: 'abc' },
+          { name: 'saas-api', lastCommit: 'def' },
+          { name: 'api', lastCommit: 'ghi' },
+        ];
+      }
+      return {};
+    });
+
+    const server = createMCPServer(backend, { envs: ['pro'] });
+    const result = await callToolViaHandler(server, 'list_repos', {});
+
+    const text = result.content[0].text as string;
+    const jsonMatch = text.match(/^(\[[\s\S]*?\]|\{[\s\S]*?\})/);
+    if (!jsonMatch) throw new Error('Failed to find JSON in result: ' + text);
+
+    const repos = JSON.parse(jsonMatch[1]);
+    expect(repos).toHaveLength(1);
+    expect(repos[0].name).toBe('api');
+  });
+
   it('should apply the intersection of project and env scopes', async () => {
     vi.spyOn(backend, 'callTool').mockImplementation(async (method) => {
       if (method === 'list_repos') {
