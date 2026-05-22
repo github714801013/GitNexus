@@ -42,6 +42,7 @@ import { JobManager } from './analyze-job.js';
 import { buildAnalyzeWorkerExecArgv } from './analyze-worker-options.js';
 import { ensureCocoaPodsDependencies } from './cocoapods.js';
 import { extractRepoName, getCloneDir, cloneOrPull, cloneOrResetToBranch } from './git-clone.js';
+import { cleanCorruptedLbugAfterCrash } from './crash-lbug-cleanup.js';
 import { WebhookAnalyzeQueue } from './webhook-analyze-queue.js';
 import {
   WebhookWorktreeError,
@@ -638,6 +639,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       );
       const stderrDetail = getWorkerStderrDetail(stderrChunks);
       console.error(`[analyze-worker] crashed code=${code} ${diagnostics}${stderrDetail}`);
+      const storagePath = getStoragePath(targetPath);
+      cleanCorruptedLbugAfterCrash(storagePath)
+        .then((r) => {
+          if (r.cleaned) {
+            console.warn(`[analyze-worker] cleaned corrupted lbug after crash: ${r.reason}`);
+          }
+        })
+        .catch(() => {});
       jobManager.updateJob(job.id, {
         status: 'failed',
         error: `Worker crashed (code ${code}) ${diagnostics}${stderrDetail}`,
@@ -1792,7 +1801,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   },
                 });
                 stderrChunks = '';
-                setTimeout(forkWorker, delay);
+                const storagePath = getStoragePath(targetPath);
+                cleanCorruptedLbugAfterCrash(storagePath)
+                  .then((r) => {
+                    if (r.cleaned) {
+                      console.warn(
+                        `[analyze-worker] cleaned corrupted lbug before retry: ${r.reason}`,
+                      );
+                    }
+                    setTimeout(forkWorker, delay);
+                  })
+                  .catch(() => {
+                    setTimeout(forkWorker, delay);
+                  });
               } else {
                 // Exhausted retries — permanent failure
                 releaseRepoLock(analyzeLockKey);
