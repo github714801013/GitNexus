@@ -1491,6 +1491,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         repoUrl: repo.cloneUrl,
         repoName: path.basename(repo.fullName),
       });
+      queued.done.catch((err) => {
+        console.error(`[webhook] gitea analyze failed for ${repo.fullName}:`, err);
+      });
 
       res.json({
         status: queued.status,
@@ -1575,6 +1578,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         force: false,
         registryName,
         registryBranch: sourceBranch,
+      });
+      queued.done.catch((err) => {
+        console.error(`[webhook] worktree analyze failed for ${registryName}:`, err);
       });
       if (queued.job?.status === 'analyzing' && copied) {
         jobManager.updateJob(queued.job.id, {
