@@ -228,6 +228,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
             // be able to accept the duplicate name without also paying the
             // cost of a full pipeline re-index. See #829 review round 2.
             allowDuplicateName: options?.allowDuplicateName,
+            returnPipelineResult: !!options?.skills,
           },
           callbacks,
         );

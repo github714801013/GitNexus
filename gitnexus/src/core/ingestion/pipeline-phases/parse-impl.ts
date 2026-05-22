@@ -94,6 +94,12 @@ type ProgressFn = (progress: PipelineProgress) => void;
  *    have contributed heritage so interface-dispatch implementor map is complete
  * 5. Collect TypeEnv bindings for cross-file propagation
  */
+const DEFAULT_SCOPE_TREE_CACHE_SIZE = 300;
+
+const getScopeTreeCacheSize = (parseableFileCount: number, containsCSharp: boolean): number => {
+  return containsCSharp ? DEFAULT_SCOPE_TREE_CACHE_SIZE : Math.max(parseableFileCount, 1);
+};
+
 export async function runChunkedParseAndResolve(
   graph: KnowledgeGraph,
   scannedFiles: ScannedFile[],
@@ -242,14 +248,17 @@ export async function runChunkedParseAndResolve(
   //   - `astCache` (chunk-local, cleared between chunks) — call /
   //     heritage / import processors read it during parse to avoid
   //     re-parsing within the same chunk.
-  //   - `scopeTreeCache` (total-parseable-sized, never cleared by
-  //     parse-impl) — exposed via ParseOutput so scope-resolution can
-  //     skip a second tree-sitter parse. Worker-mode parses don't
-  //     populate either; consumers fall back to a fresh parse.
+  //   - `scopeTreeCache` (cross-phase, cleared by scope-resolution)
+  //     lets scope-resolution skip a second tree-sitter parse. Worker-mode
+  //     parses don't populate it; consumers fall back to a fresh parse. C#
+  //     repos cap this cache to avoid retaining every Tree in very large
+  //     sequential parses.
   // See plan docs/plans/2026-04-20-002-perf-parse-heritage-mro-plan.md (Unit 4).
   const maxChunkFiles = chunks.reduce((max, c) => Math.max(max, c.length), 0);
   let astCache = createASTCache(maxChunkFiles);
-  const scopeTreeCache = createASTCache(Math.max(parseableScanned.length, 1));
+  const scopeTreeCache = createASTCache(
+    getScopeTreeCacheSize(parseableScanned.length, containsCSharp),
+  );
 
   // Build import resolution context once — suffix index, file lists, resolve cache.
   const importCtx = buildImportResolutionContext(allPaths);

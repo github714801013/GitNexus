@@ -160,6 +160,12 @@ const pathExists = async (targetPath: string): Promise<boolean> =>
     () => false,
   );
 
+const canonicalPath = async (targetPath: string): Promise<string> => {
+  const realPath = await fs.realpath(targetPath);
+  const normalized = path.normalize(realPath);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+};
+
 const runGit = (args: string[], cwd: string): Promise<string> =>
   new Promise((resolve, reject) => {
     const proc = spawn('git', args, {
@@ -197,6 +203,7 @@ export interface EnsureWorktreeParams {
   worktreePath: string;
   branch: string;
   baseRef?: string;
+  resetToRef?: string;
 }
 
 export interface EnsureWorktreeResult {
@@ -210,10 +217,15 @@ export const ensureLocalWorktree = async (
 ): Promise<EnsureWorktreeResult> => {
   assertSafeGitRef(params.branch, 'branch');
   if (params.baseRef) assertSafeGitRef(params.baseRef, 'baseRef');
+  if (params.resetToRef) assertSafeGitRef(params.resetToRef, 'resetToRef');
 
   if (await pathExists(params.worktreePath)) {
     const gitDir = await runGit(['rev-parse', '--show-toplevel'], params.worktreePath);
-    if (path.resolve(gitDir) !== path.resolve(params.worktreePath)) {
+    const [gitRealPath, worktreeRealPath] = await Promise.all([
+      canonicalPath(gitDir),
+      canonicalPath(params.worktreePath),
+    ]);
+    if (gitRealPath !== worktreeRealPath) {
       throw new WebhookWorktreeError('Managed worktree path points at a different repository', 409);
     }
   } else {
@@ -234,6 +246,18 @@ export const ensureLocalWorktree = async (
   const currentBranch = await runGit(['branch', '--show-current'], params.worktreePath);
   if (currentBranch !== params.branch) {
     throw new WebhookWorktreeError('Managed worktree path uses a different branch', 409);
+  }
+  if (params.resetToRef) {
+    if (params.resetToRef.startsWith('origin/')) {
+      await runGit(
+        ['fetch', 'origin', params.resetToRef.slice('origin/'.length), '--depth', '1'],
+        params.worktreePath,
+      );
+      await runGit(['reset', '--hard', 'FETCH_HEAD'], params.worktreePath);
+    } else {
+      await runGit(['reset', '--hard', params.resetToRef], params.worktreePath);
+    }
+    await runGit(['clean', '-fd', '-e', '.gitnexus', '-e', '.gitnexus/'], params.worktreePath);
   }
   const commit = await runGit(['rev-parse', 'HEAD'], params.worktreePath);
   return { worktreePath: params.worktreePath, branch: currentBranch, commit };

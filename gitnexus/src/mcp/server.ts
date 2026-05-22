@@ -102,6 +102,23 @@ const parseEnvList = (raw: string | undefined): string[] => {
 const BASE_ENV_NAMES = new Set(['pro']);
 const DEFAULT_ENV_INDEX_PREFIXES = ['dev', 'saas'];
 
+const expandWhitelistWithEnvPrefixes = (
+  whitelist: string[] | undefined,
+  envPrefixes: string[] | undefined,
+): string[] | undefined => {
+  if (!whitelist || whitelist.length === 0 || !envPrefixes || envPrefixes.length === 0) {
+    return whitelist;
+  }
+  return [
+    ...new Set([
+      ...whitelist,
+      ...whitelist.flatMap((project) =>
+        envPrefixes.map((prefix) => (project.startsWith(prefix) ? project : `${prefix}${project}`)),
+      ),
+    ]),
+  ];
+};
+
 /**
  * Create a configured MCP Server with all handlers registered.
  * Transport-agnostic — caller connects the desired transport.
@@ -129,6 +146,7 @@ export function createMCPServer(backend: LocalBackend, repoScope?: MCPRepoScopeI
   const envs = normalizeScopeValues(scope.envs);
   const baseEnvRequested = envs?.some((env) => BASE_ENV_NAMES.has(env)) ?? false;
   const envPrefixes = envs?.filter((env) => !BASE_ENV_NAMES.has(env)).map((env) => `${env}-`);
+  const expandedWhitelist = expandWhitelistWithEnvPrefixes(whitelist, envPrefixes);
   const knownEnvPrefixes = [
     ...new Set([
       ...DEFAULT_ENV_INDEX_PREFIXES,
@@ -150,10 +168,12 @@ export function createMCPServer(backend: LocalBackend, repoScope?: MCPRepoScopeI
     const p = path?.toLowerCase();
     const pathBaseName = p ? p.split(/[\\/]/).filter(Boolean).pop() : undefined;
     const matchesProject =
-      !whitelist ||
-      whitelist.includes(n) ||
-      (i && whitelist.includes(i)) ||
-      (p && (whitelist.includes(p) || (p.startsWith('/') && whitelist.includes(p.substring(1)))));
+      !expandedWhitelist ||
+      expandedWhitelist.includes(n) ||
+      (i && expandedWhitelist.includes(i)) ||
+      (p &&
+        (expandedWhitelist.includes(p) ||
+          (p.startsWith('/') && expandedWhitelist.includes(p.substring(1)))));
     const hasKnownEnvPrefix = knownEnvPrefixes.some(
       (prefix) =>
         n.startsWith(prefix) ||
@@ -175,7 +195,10 @@ export function createMCPServer(backend: LocalBackend, repoScope?: MCPRepoScopeI
     (whitelist && whitelist.length > 0) ||
     (envPrefixes && envPrefixes.length > 0) ||
     baseEnvRequested;
-  const headScope = [...(whitelist ?? []), ...(envPrefixes?.map((prefix) => `${prefix}*`) ?? [])];
+  const headScope = [
+    ...(expandedWhitelist ?? []),
+    ...(envPrefixes?.map((prefix) => `${prefix}*`) ?? []),
+  ];
 
   // Handle list resources request
   server.setRequestHandler(ListResourcesRequestSchema, async () => {

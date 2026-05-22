@@ -368,6 +368,182 @@ describe('runPipeline', () => {
     }
   });
 
+  it('emits phase memory snapshots through progress when enabled', async () => {
+    const events: { phase: string; message: string }[] = [];
+    const originalFlag = process.env.GITNEXUS_PIPELINE_MEMORY_LOG;
+    process.env.GITNEXUS_PIPELINE_MEMORY_LOG = '1';
+
+    const phase: PipelinePhase<string> = {
+      name: 'memory-check',
+      deps: [],
+      async execute() {
+        return 'ok';
+      },
+    };
+
+    try {
+      await runPipeline([phase], {
+        ...makeCtx(),
+        onProgress: (p) => events.push({ phase: p.phase, message: p.message }),
+      });
+    } finally {
+      if (originalFlag === undefined) {
+        delete process.env.GITNEXUS_PIPELINE_MEMORY_LOG;
+      } else {
+        process.env.GITNEXUS_PIPELINE_MEMORY_LOG = originalFlag;
+      }
+    }
+
+    const memoryEvents = events.filter((event) =>
+      event.message.includes('[memory] phase=memory-check'),
+    );
+    expect(memoryEvents).toHaveLength(2);
+    expect(memoryEvents.every((event) => event.phase === 'enriching')).toBe(true);
+    expect(memoryEvents[0].message).toMatch(/marker=start/);
+    expect(memoryEvents[0].message).toMatch(/heapUsedMb=\d+/);
+    expect(memoryEvents[0].message).toMatch(/rssMb=\d+/);
+    expect(memoryEvents[0].message).toMatch(/retainedResults=0/);
+    expect(memoryEvents[1].message).toMatch(/marker=complete/);
+    expect(memoryEvents[1].message).toMatch(/heapUsedMb=\d+/);
+    expect(memoryEvents[1].message).toMatch(/rssMb=\d+/);
+    expect(memoryEvents[1].message).toMatch(/retainedResults=1/);
+  });
+
+  it('does not emit phase memory snapshots by default', async () => {
+    const events: { message: string }[] = [];
+    const originalFlag = process.env.GITNEXUS_PIPELINE_MEMORY_LOG;
+    delete process.env.GITNEXUS_PIPELINE_MEMORY_LOG;
+
+    const phase: PipelinePhase<string> = {
+      name: 'memory-check',
+      deps: [],
+      async execute() {
+        return 'ok';
+      },
+    };
+
+    try {
+      await runPipeline([phase], {
+        ...makeCtx(),
+        onProgress: (p) => events.push({ message: p.message }),
+      });
+    } finally {
+      if (originalFlag === undefined) {
+        delete process.env.GITNEXUS_PIPELINE_MEMORY_LOG;
+      } else {
+        process.env.GITNEXUS_PIPELINE_MEMORY_LOG = originalFlag;
+      }
+    }
+
+    expect(events.filter((event) => event.message.includes('[memory]'))).toHaveLength(0);
+  });
+
+  it('releases phase outputs after their last dependent runs', async () => {
+    const phaseA: PipelinePhase<string> = {
+      name: 'a',
+      deps: [],
+      async execute() {
+        return 'resultA';
+      },
+    };
+
+    const phaseB: PipelinePhase<string> = {
+      name: 'b',
+      deps: ['a'],
+      async execute(_ctx, deps) {
+        expect(getPhaseOutput<string>(deps, 'a')).toBe('resultA');
+        return 'resultB';
+      },
+    };
+
+    const phaseC: PipelinePhase<string> = {
+      name: 'c',
+      deps: ['b'],
+      async execute(_ctx, deps) {
+        expect(getPhaseOutput<string>(deps, 'b')).toBe('resultB');
+        return 'resultC';
+      },
+    };
+
+    const phaseD: PipelinePhase<string> = {
+      name: 'd',
+      deps: [],
+      async execute() {
+        return 'resultD';
+      },
+    };
+
+    const results = await runPipeline([phaseA, phaseB, phaseC, phaseD], makeCtx(), {
+      releaseConsumedResults: true,
+    });
+
+    expect(results.has('a')).toBe(false);
+    expect(results.has('b')).toBe(false);
+    expect(results.get('c')?.output).toBe('resultC');
+    expect(results.get('d')?.output).toBe('resultD');
+  });
+
+  it('keeps completed phase outputs by default for compatibility', async () => {
+    const phaseA: PipelinePhase<string> = {
+      name: 'a',
+      deps: [],
+      async execute() {
+        return 'resultA';
+      },
+    };
+
+    const phaseB: PipelinePhase<string> = {
+      name: 'b',
+      deps: ['a'],
+      async execute(_ctx, deps) {
+        expect(getPhaseOutput<string>(deps, 'a')).toBe('resultA');
+        return 'resultB';
+      },
+    };
+
+    const results = await runPipeline([phaseA, phaseB], makeCtx());
+
+    expect(results.get('a')?.output).toBe('resultA');
+    expect(results.get('b')?.output).toBe('resultB');
+  });
+
+  it('retains requested phase outputs after their last dependent runs', async () => {
+    const phaseA: PipelinePhase<string> = {
+      name: 'a',
+      deps: [],
+      async execute() {
+        return 'resultA';
+      },
+    };
+
+    const phaseB: PipelinePhase<string> = {
+      name: 'b',
+      deps: ['a'],
+      async execute(_ctx, deps) {
+        expect(getPhaseOutput<string>(deps, 'a')).toBe('resultA');
+        return 'resultB';
+      },
+    };
+
+    const phaseC: PipelinePhase<string> = {
+      name: 'c',
+      deps: ['b'],
+      async execute(_ctx, deps) {
+        expect(getPhaseOutput<string>(deps, 'b')).toBe('resultB');
+        return 'resultC';
+      },
+    };
+
+    const results = await runPipeline([phaseA, phaseB, phaseC], makeCtx(), {
+      releaseConsumedResults: true,
+      retainResults: ['a', 'c'],
+    });
+
+    expect(results.get('a')?.output).toBe('resultA');
+    expect(results.has('b')).toBe(false);
+    expect(results.get('c')?.output).toBe('resultC');
+  });
+
   it('only exposes declared deps to each phase', async () => {
     const phaseA: PipelinePhase<string> = {
       name: 'a',

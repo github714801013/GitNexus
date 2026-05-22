@@ -137,16 +137,58 @@ function findCyclePath(
   return [...remaining].sort();
 }
 
+export interface PipelineRunOptions {
+  readonly retainResults?: readonly string[];
+  readonly releaseConsumedResults?: boolean;
+}
+
+function getRemainingDependentCounts(phases: readonly PipelinePhase[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const phase of phases) {
+    counts.set(phase.name, 0);
+  }
+  for (const phase of phases) {
+    for (const dep of phase.deps) {
+      counts.set(dep, (counts.get(dep) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+function getMemorySnapshotDetail(retainedResults: number): string {
+  const memory = process.memoryUsage();
+  return `heapUsedMb=${Math.round(memory.heapUsed / 1024 / 1024)} rssMb=${Math.round(memory.rss / 1024 / 1024)} retainedResults=${retainedResults}`;
+}
+
+function emitPhaseMemory(
+  ctx: PipelineContext,
+  phaseName: string,
+  marker: string,
+  retainedResults: number,
+): void {
+  if (process.env.GITNEXUS_PIPELINE_MEMORY_LOG !== '1') return;
+  try {
+    ctx.onProgress({
+      phase: 'enriching',
+      percent: 0,
+      message: `[memory] phase=${phaseName} marker=${marker} ${getMemorySnapshotDetail(retainedResults)}`,
+    });
+  } catch {
+    /* diagnostic progress must not interrupt analysis */
+  }
+}
+
 /**
  * Execute a set of pipeline phases in dependency order.
  *
  * @param phases  All phases to execute (order doesn't matter — sorted internally)
  * @param ctx     Shared pipeline context
- * @returns       Map of phase name → PhaseResult (all completed phases)
+ * @returns       Map of retained phase name → PhaseResult
  */
 export async function runPipeline(
   phases: readonly PipelinePhase[],
   ctx: PipelineContext,
+  options: PipelineRunOptions = {},
 ): Promise<ReadonlyMap<string, PhaseResult<unknown>>> {
   let sorted: PipelinePhase[];
   try {
@@ -171,6 +213,8 @@ export async function runPipeline(
     throw err;
   }
   const results = new Map<string, PhaseResult<unknown>>();
+  const retainedResultNames = new Set(options.retainResults ?? []);
+  const remainingDependentCounts = getRemainingDependentCounts(sorted);
 
   for (const phase of sorted) {
     const start = Date.now();
@@ -178,6 +222,8 @@ export async function runPipeline(
     if (isDev) {
       console.log(`▶ Phase: ${phase.name}`);
     }
+
+    emitPhaseMemory(ctx, phase.name, 'start', results.size);
 
     // Only expose declared dependencies — prevents hidden coupling to undeclared phases.
     const declaredDeps = new Map<string, PhaseResult<unknown>>();
@@ -218,6 +264,22 @@ export async function runPipeline(
       output,
       durationMs,
     });
+
+    for (const depName of phase.deps) {
+      const remaining = (remainingDependentCounts.get(depName) ?? 0) - 1;
+      remainingDependentCounts.set(depName, remaining);
+      if (options.releaseConsumedResults && remaining === 0 && !retainedResultNames.has(depName)) {
+        results.delete(depName);
+      }
+    }
+
+    if (isDev) {
+      console.log(
+        `Pipeline retained ${results.size} phase result${results.size === 1 ? '' : 's'} after ${phase.name}`,
+      );
+    }
+
+    emitPhaseMemory(ctx, phase.name, 'complete', results.size);
 
     if (isDev) {
       console.log(`✓ Phase: ${phase.name} (${durationMs}ms)`);

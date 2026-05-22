@@ -24,9 +24,13 @@ RUN if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
     ca-certificates \
     python3 \
     git \
+    ruby-full \
+    ruby-dev \
+    rsync \
     build-essential \
     libgomp1 \
     util-linux \
+    && gem install cocoapods -N \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && git config --global user.email "gitnexus@example.com" \

@@ -142,6 +142,29 @@ describe('MCP Server with project whitelisting', () => {
     expect(repos[0].name).toBe('dev-api');
   });
 
+  it('should expand base project whitelist entries with the requested env prefix', async () => {
+    vi.spyOn(backend, 'callTool').mockImplementation(async (method) => {
+      if (method === 'list_repos') {
+        return [
+          { name: 'dev-oa-stock', lastCommit: 'abc' },
+          { name: 'oa-stock', lastCommit: 'def' },
+          { name: 'dev-oa-order', lastCommit: 'ghi' },
+        ];
+      }
+      return {};
+    });
+
+    const server = createMCPServer(backend, { projects: ['oa-stock', 'oa-order'], envs: ['dev'] });
+    const result = await callToolViaHandler(server, 'list_repos', {});
+
+    const text = result.content[0].text as string;
+    const jsonMatch = text.match(/^(\[[\s\S]*?\]|\{[\s\S]*?\})/);
+    if (!jsonMatch) throw new Error('Failed to find JSON in result: ' + text);
+
+    const repos = JSON.parse(jsonMatch[1]);
+    expect(repos.map((repo: any) => repo.name)).toEqual(['dev-oa-stock', 'dev-oa-order']);
+  });
+
   it('should block access to non-whitelisted repos', async () => {
     const server = createMCPServer(backend, ['repo-1']);
 

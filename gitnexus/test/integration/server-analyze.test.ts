@@ -92,27 +92,25 @@ describe('server-side analyze integration', () => {
     expect(dir).toContain('react');
   });
 
-  it('concurrency: blocks second job while first is active', () => {
+  it('concurrency: allows different repos while preserving same-repo deduplication', () => {
     // First job completes from previous test, start fresh
     const freshManager = new JobManager();
 
     const job1 = freshManager.createJob({ repoUrl: 'https://github.com/user/repo-a' });
     freshManager.updateJob(job1.id, { status: 'analyzing' });
 
-    // Second different repo should be rejected
-    expect(() => freshManager.createJob({ repoUrl: 'https://github.com/user/repo-b' })).toThrow(
-      /already in progress/,
-    );
+    // Different repo should be allowed to run independently.
+    const job2 = freshManager.createJob({ repoUrl: 'https://github.com/user/repo-b' });
+    expect(job2.id).not.toBe(job1.id);
 
     // Same repo should return existing job
     const job1again = freshManager.createJob({ repoUrl: 'https://github.com/user/repo-a' });
     expect(job1again.id).toBe(job1.id);
 
-    // After completion, new job allowed
+    // After completion, another job for repo-b returns the active repo-b job.
     freshManager.updateJob(job1.id, { status: 'complete' });
-    const job2 = freshManager.createJob({ repoUrl: 'https://github.com/user/repo-b' });
-    expect(job2.status).toBe('queued');
-    expect(job2.id).not.toBe(job1.id);
+    const job2again = freshManager.createJob({ repoUrl: 'https://github.com/user/repo-b' });
+    expect(job2again.id).toBe(job2.id);
 
     freshManager.dispose();
   });

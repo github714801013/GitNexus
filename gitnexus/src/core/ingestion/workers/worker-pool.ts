@@ -12,6 +12,7 @@ export interface WorkerPool {
   dispatch<TInput, TResult>(
     items: TInput[],
     onProgress?: (filesProcessed: number) => void,
+    onResult?: (result: TResult, workerIndex: number) => void,
   ): Promise<TResult[]>;
 
   /** Terminate all workers. Must be called when done. */
@@ -65,6 +66,7 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
   const dispatch = <TInput, TResult>(
     items: TInput[],
     onProgress?: (filesProcessed: number) => void,
+    onResult?: (result: TResult, workerIndex: number) => void,
   ): Promise<TResult[]> => {
     if (items.length === 0) return Promise.resolve([]);
 
@@ -138,7 +140,18 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
           } else if (msg.type === 'result') {
             settled = true;
             cleanup();
-            resolve(msg.data as TResult);
+            const result = msg.data as TResult;
+            if (onResult) {
+              try {
+                onResult(result, i);
+              } catch (err) {
+                reject(err);
+                return;
+              }
+              resolve(undefined as TResult);
+            } else {
+              resolve(result);
+            }
           }
         };
 
@@ -169,7 +182,7 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
       });
     });
 
-    return Promise.all(promises);
+    return Promise.all(promises).then((results) => (onResult ? [] : results));
   };
 
   const terminate = async (): Promise<void> => {

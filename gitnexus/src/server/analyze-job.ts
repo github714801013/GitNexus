@@ -3,7 +3,6 @@
  *
  * Tracks server-side analysis jobs with:
  * - In-memory Map storage
- * - Single-slot concurrency (one active job at a time)
  * - Same-repo deduplication (returns existing job)
  * - Progress event emission for SSE relay
  * - 1-hour TTL cleanup for completed/failed jobs
@@ -35,7 +34,6 @@ export interface AnalyzeJob {
 
 const JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-const JOB_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 export class JobManager {
   private jobs = new Map<string, AnalyzeJob>();
@@ -59,13 +57,6 @@ export class JobManager {
         if (isSameRepo) {
           return job;
         }
-      }
-    }
-
-    // Single-slot: reject if another job is active (different repo)
-    for (const job of this.jobs.values()) {
-      if (!this.isTerminal(job.status)) {
-        throw new Error(`已有任务正在执行，请等待当前任务完成后再试 (job ${job.id})`);
       }
     }
 
@@ -120,27 +111,13 @@ export class JobManager {
     }
   }
 
-  /** Register a child process for a job — enables cancellation and timeout. */
+  /** Register a child process for a job — enables cancellation. */
   registerChild(jobId: string, child: ChildProcess) {
     this.children.set(jobId, child);
-
-    // 30-minute timeout
-    const timer = setTimeout(() => {
-      const job = this.jobs.get(jobId);
-      if (job && !this.isTerminal(job.status)) {
-        this.cancelJob(jobId, 'Analysis timed out (30 minute limit)');
-      }
-    }, JOB_TIMEOUT_MS);
-    this.timeouts.set(jobId, timer);
 
     // Clean up tracking when child exits
     child.on('exit', () => {
       this.children.delete(jobId);
-      const t = this.timeouts.get(jobId);
-      if (t) {
-        clearTimeout(t);
-        this.timeouts.delete(jobId);
-      }
     });
   }
 

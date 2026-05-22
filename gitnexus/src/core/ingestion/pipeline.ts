@@ -103,13 +103,20 @@ export const runPipelineFromRepo = async (
 
   const phases = buildPhaseList(options);
 
-  const results = await runPipeline(phases, {
-    repoPath,
-    graph,
-    onProgress,
-    options,
-    pipelineStart,
-  });
+  const retainedResults = options?.skipGraphPhases
+    ? ['parse']
+    : ['parse', 'communities', 'processes'];
+  const results = await runPipeline(
+    phases,
+    {
+      repoPath,
+      graph,
+      onProgress,
+      options,
+      pipelineStart,
+    },
+    { retainResults: retainedResults, releaseConsumedResults: true },
+  );
 
   // Extract final results for the PipelineResult contract
   const { totalFiles, usedWorkerPool } = getPhaseOutput<{

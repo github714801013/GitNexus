@@ -80,6 +80,11 @@ export interface AnalyzeOptions {
    */
   registryName?: string;
   /**
+   * Branch name to persist in meta/registry when the on-disk git branch is an
+   * implementation detail, e.g. env worktrees named dev-project.
+   */
+  registryBranch?: string;
+  /**
    * Bypass the `RegistryNameCollisionError` guard and allow two paths
    * to register under the same `name` (#829). Controlled by the
    * dedicated `--allow-duplicate-name` CLI flag, intentionally
@@ -88,6 +93,8 @@ export interface AnalyzeOptions {
    * of a pipeline re-index.
    */
   allowDuplicateName?: boolean;
+  /** Return raw pipeline artifacts for CLI-only post-processing such as skill generation. */
+  returnPipelineResult?: boolean;
 }
 
 export interface EmbeddingsOnlyOptions {
@@ -240,7 +247,7 @@ export async function runFullAnalysis(
   const pipelineResult = await runPipelineFromRepo(repoPath, (p) => {
     const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
     const scaled = Math.round(p.percent * 0.6);
-    progress(p.phase, scaled, phaseLabel);
+    progress(p.phase, scaled, p.message.startsWith('[memory] ') ? p.message : phaseLabel);
   });
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
@@ -375,7 +382,8 @@ export async function runFullAnalysis(
       repoPath,
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
-      branch: hasGitDir(repoPath) ? getCurrentBranch(repoPath) : undefined,
+      branch:
+        options.registryBranch ?? (hasGitDir(repoPath) ? getCurrentBranch(repoPath) : undefined),
       // Captured here (not at registration) so it travels with the
       // on-disk meta.json — sibling-clone fingerprinting works for
       // out-of-tree consumers (group-status, future tooling) without
@@ -508,7 +516,7 @@ export async function runFullAnalysis(
       repoName: projectName,
       repoPath,
       stats: meta.stats,
-      pipelineResult,
+      ...(options.returnPipelineResult ? { pipelineResult } : {}),
     };
   } catch (err) {
     // Ensure LadybugDB is closed even on error

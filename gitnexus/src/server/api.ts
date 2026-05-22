@@ -39,8 +39,8 @@ import { mountMCPEndpoints } from './mcp-http.js';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
-import { waitForJobManagerIdle } from './analyze-job-wait.js';
 import { buildAnalyzeWorkerExecArgv } from './analyze-worker-options.js';
+import { ensureCocoaPodsDependencies } from './cocoapods.js';
 import { extractRepoName, getCloneDir, cloneOrPull, cloneOrResetToBranch } from './git-clone.js';
 import { WebhookAnalyzeQueue } from './webhook-analyze-queue.js';
 import {
@@ -61,6 +61,48 @@ import {
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
+const DEFAULT_WEBHOOK_ANALYZE_CONCURRENCY = 1;
+const MEMORY_PROGRESS_PREFIX = '[memory] ';
+
+const sanitizeWorkerDiagnostic = (value: string, maxLength = 240): string =>
+  value.slice(0, maxLength).replace(/[\x00-\x1f\x7f]/g, '?');
+
+const getWorkerStderrDetail = (stderrChunks: string): string => {
+  if (!stderrChunks) return '';
+  const safeLines = stderrChunks
+    .trim()
+    .split('\n')
+    .map((line) => sanitizeWorkerDiagnostic(line, 400))
+    .slice(-20);
+  return safeLines.length ? ': ' + safeLines.join('\n') : '';
+};
+
+function formatWorkerCrashDiagnostics(
+  jobId: string,
+  repoPath: string,
+  lastProgressMessage: string,
+  lastMemoryProgressMessage: string,
+): string {
+  const repoName = sanitizeWorkerDiagnostic(path.basename(repoPath));
+  const safeJobId = jobId.replace(/[^a-zA-Z0-9-]/g, '?');
+  const lastProgress = lastProgressMessage
+    ? sanitizeWorkerDiagnostic(lastProgressMessage)
+    : 'unavailable';
+  const lastMemory = lastMemoryProgressMessage
+    ? sanitizeWorkerDiagnostic(lastMemoryProgressMessage)
+    : 'unavailable';
+  return `jobId=${safeJobId} repo=${repoName} lastProgress=${lastProgress} lastMemory=${lastMemory}`;
+}
+
+function logMemoryProgress(jobId: string, repoPath: string, message: unknown): void {
+  if (typeof message !== 'string' || !message.startsWith(MEMORY_PROGRESS_PREFIX)) return;
+  const repoName = sanitizeWorkerDiagnostic(path.basename(repoPath));
+  const safeJobId = jobId.replace(/[^a-zA-Z0-9-]/g, '?');
+  const suffix = sanitizeWorkerDiagnostic(
+    message.slice(MEMORY_PROGRESS_PREFIX.length, MEMORY_PROGRESS_PREFIX.length + 240),
+  );
+  console.info(`[memory] jobId=${safeJobId} repo=${repoName} ${suffix}`);
+}
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -128,6 +170,13 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
   if (a === 192 && b === 168) return true;
 
   return false;
+};
+
+export const getWebhookAnalyzeConcurrency = (): number => {
+  const raw = process.env.GITNEXUS_WEBHOOK_ANALYZE_CONCURRENCY || process.env.INDEXING_CONCURRENCY;
+  if (!raw) return DEFAULT_WEBHOOK_ANALYZE_CONCURRENCY;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_WEBHOOK_ANALYZE_CONCURRENCY;
 };
 
 type GraphStreamRecord =
@@ -491,7 +540,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   await backend.init();
   const cleanupMcp = mountMCPEndpoints(app, backend);
   const jobManager = new JobManager();
-  const webhookAnalyzeQueue = new WebhookAnalyzeQueue(1);
+  const webhookAnalyzeQueue = new WebhookAnalyzeQueue(getWebhookAnalyzeConcurrency());
 
   // Shared repo lock — prevents concurrent analyze + embed on the same repo path,
   // which would corrupt LadybugDB (analyze calls closeLbug + initLbug while embed has queries in flight).
@@ -529,13 +578,22 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     });
 
     let stderrChunks = '';
+    let lastProgressMessage = '';
+    let lastMemoryProgressMessage = '';
     child.stderr?.on('data', (chunk: Buffer) => {
       stderrChunks += chunk.toString();
-      if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
+      if (stderrChunks.length > 65536) stderrChunks = stderrChunks.slice(-65536);
     });
 
     child.on('message', (msg: any) => {
       if (msg.type === 'progress') {
+        if (typeof msg.message === 'string') {
+          lastProgressMessage = msg.message;
+          if (msg.message.startsWith(MEMORY_PROGRESS_PREFIX)) {
+            lastMemoryProgressMessage = msg.message;
+          }
+        }
+        logMemoryProgress(job.id, targetPath, msg.message);
         jobManager.updateJob(job.id, {
           status: 'analyzing',
           progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
@@ -572,9 +630,17 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const currentJob = jobManager.getJob(job.id);
       if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed') return;
       releaseRepoLock(analyzeLockKey);
+      const diagnostics = formatWorkerCrashDiagnostics(
+        job.id,
+        targetPath,
+        lastProgressMessage,
+        lastMemoryProgressMessage,
+      );
+      const stderrDetail = getWorkerStderrDetail(stderrChunks);
+      console.error(`[analyze-worker] crashed code=${code} ${diagnostics}${stderrDetail}`);
       jobManager.updateJob(job.id, {
         status: 'failed',
-        error: `Worker crashed (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
+        error: `Worker crashed (code ${code}) ${diagnostics}${stderrDetail}`,
       });
     });
 
@@ -590,15 +656,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       force?: boolean;
       embeddings?: boolean;
       registryName?: string;
+      registryBranch?: string;
     } = {},
+    lockAlreadyHeld = false,
   ): ReturnType<JobManager['createJob']> => {
     const job = jobManager.createJob({ repoUrl: params.repoUrl, repoPath });
     if (job.status !== 'queued') return job;
 
     const analyzeLockKey = getStoragePath(repoPath);
-    const lockErr = acquireRepoLock(analyzeLockKey);
-    if (lockErr) {
-      throw new Error(lockErr);
+    if (!lockAlreadyHeld) {
+      const lockErr = acquireRepoLock(analyzeLockKey);
+      if (lockErr) {
+        throw new Error(lockErr);
+      }
     }
 
     jobManager.updateJob(job.id, {
@@ -611,6 +681,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       force: !!params.force,
       embeddings: params.embeddings,
       registryName: params.registryName,
+      registryBranch: params.registryBranch,
     });
     return job;
   };
@@ -643,15 +714,29 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     beforeAnalyze?: () => Promise<void>,
   ) => {
     let job: ReturnType<typeof startAnalyzeForPath> | undefined;
+    const resolvedRepoPath = path.resolve(repoPath);
+    console.info(`[webhook] enqueue analyze repoPath=${resolvedRepoPath}`);
     const queued = webhookAnalyzeQueue.enqueue({
-      key: path.resolve(repoPath),
+      key: resolvedRepoPath,
       run: async () => {
-        await beforeAnalyze?.();
-        await waitForJobManagerIdle(jobManager);
-        job = startAnalyzeForPath(repoPath, params);
-        await waitForAnalyzeJob(job.id);
+        const lockKey = getStoragePath(repoPath);
+        const lockErr = acquireRepoLock(lockKey);
+        if (lockErr) throw new Error(lockErr);
+        try {
+          await beforeAnalyze?.();
+          await ensureCocoaPodsDependencies(repoPath);
+          job = startAnalyzeForPath(repoPath, params, true);
+          console.info(`[webhook] analyze started jobId=${job.id} repoPath=${resolvedRepoPath}`);
+          await waitForAnalyzeJob(job.id);
+          console.info(`[webhook] analyze completed jobId=${job.id} repoPath=${resolvedRepoPath}`);
+        } catch (err: any) {
+          releaseRepoLock(lockKey);
+          console.error(`[webhook] analyze failed repoPath=${resolvedRepoPath}:`, err);
+          throw err;
+        }
       },
     });
+    console.info(`[webhook] analyze ${queued.status} repoPath=${resolvedRepoPath}`);
     return {
       status: queued.status,
       get job() {
@@ -1373,6 +1458,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.post('/webhook/gitea', async (req, res) => {
     try {
       const repo = parseGiteaWebhookRepo(req.body);
+      console.info(
+        `[webhook] received gitea repository=${repo.fullName} branch=${repo.branch || 'master'}`,
+      );
       const projectsRoot = getProjectsRoot();
       const repoPath = getGiteaWebhookRepoPath(projectsRoot, repo.fullName);
       const reposFile = path.join(projectsRoot, 'repos.json');
@@ -1384,6 +1472,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       });
 
       if (repo.cloneUrl) {
+        console.info(
+          `[webhook] sync repository repository=${repo.fullName} branch=${repo.branch || 'master'} path=${repoPath}`,
+        );
         await cloneOrResetToBranch(repo.cloneUrl, repoPath, repo.branch || 'master');
       }
 
@@ -1400,13 +1491,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       });
     } catch (err: any) {
       if (err instanceof WebhookWorktreeError) {
+        console.error('[webhook] gitea request rejected:', err.message);
         res.status(err.statusCode).json({ error: err.message });
         return;
       }
       if (err.message?.includes('已有任务正在执行') || err.message?.includes('already active')) {
+        console.error('[webhook] gitea analyze conflict:', err.message);
         res.status(409).json({ error: err.message });
         return;
       }
+      console.error('[webhook] gitea request failed:', err);
       res.status(500).json({ error: err.message || 'Failed to process Gitea webhook' });
     }
   });
@@ -1448,12 +1542,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         worktreePath,
         branch: registryName,
         baseRef: `origin/${sourceBranch}`,
+        resetToRef: `origin/${sourceBranch}`,
       });
 
       const copied = await copyBootstrapIndex({
         sourceRepoPath: mainRepoPath,
         worktreePath: worktree.worktreePath,
-        branch: worktree.branch,
+        branch: sourceBranch,
         commit: worktree.commit,
         registryName,
         register: async (repoPath, meta, opts) => {
@@ -1470,6 +1565,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         repoName: registryName,
         force: false,
         registryName,
+        registryBranch: sourceBranch,
       });
       if (queued.job?.status === 'analyzing' && copied) {
         jobManager.updateJob(queued.job.id, {
@@ -1610,15 +1706,23 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
             });
 
-            // Capture stderr for crash diagnostics
             let stderrChunks = '';
+            let lastProgressMessage = '';
+            let lastMemoryProgressMessage = '';
             child.stderr?.on('data', (chunk: Buffer) => {
               stderrChunks += chunk.toString();
-              if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
+              if (stderrChunks.length > 65536) stderrChunks = stderrChunks.slice(-65536);
             });
 
             child.on('message', (msg: any) => {
               if (msg.type === 'progress') {
+                if (typeof msg.message === 'string') {
+                  lastProgressMessage = msg.message;
+                  if (msg.message.startsWith(MEMORY_PROGRESS_PREFIX)) {
+                    lastMemoryProgressMessage = msg.message;
+                  }
+                }
+                logMemoryProgress(job.id, targetPath, msg.message);
                 jobManager.updateJob(job.id, {
                   status: 'analyzing',
                   progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
@@ -1667,9 +1771,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               if (j.retryCount < MAX_WORKER_RETRIES) {
                 j.retryCount++;
                 const delay = 1000 * Math.pow(2, j.retryCount - 1); // 1s, 2s
-                const lastErr = stderrChunks.trim().split('\n').pop() || '';
+                const lastErr =
+                  getWorkerStderrDetail(stderrChunks).split('\n').pop()?.replace(/^: /, '') || '';
+                const diagnostics = formatWorkerCrashDiagnostics(
+                  job.id,
+                  targetPath,
+                  lastProgressMessage,
+                  lastMemoryProgressMessage,
+                );
                 console.warn(
-                  `Analyze worker crashed (code ${code}), retry ${j.retryCount}/${MAX_WORKER_RETRIES} in ${delay}ms` +
+                  `Analyze worker crashed (code ${code}), retry ${j.retryCount}/${MAX_WORKER_RETRIES} in ${delay}ms ${diagnostics}` +
                     (lastErr ? `: ${lastErr}` : ''),
                 );
                 jobManager.updateJob(job.id, {
@@ -1685,9 +1796,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               } else {
                 // Exhausted retries — permanent failure
                 releaseRepoLock(analyzeLockKey);
+                const diagnostics = formatWorkerCrashDiagnostics(
+                  job.id,
+                  targetPath,
+                  lastProgressMessage,
+                  lastMemoryProgressMessage,
+                );
+                const stderrDetail = getWorkerStderrDetail(stderrChunks);
+                console.error(
+                  `[analyze-worker] crashed code=${code} attempts=${MAX_WORKER_RETRIES + 1} ${diagnostics}${stderrDetail}`,
+                );
                 jobManager.updateJob(job.id, {
                   status: 'failed',
-                  error: `Worker crashed ${MAX_WORKER_RETRIES + 1} times (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
+                  error: `Worker crashed ${MAX_WORKER_RETRIES + 1} times (code ${code}) ${diagnostics}${stderrDetail}`,
                 });
               }
             });

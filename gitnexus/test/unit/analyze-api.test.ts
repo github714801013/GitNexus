@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JobManager } from '../../src/server/analyze-job.js';
 
 describe('analyze API logic', () => {
@@ -19,12 +19,11 @@ describe('analyze API logic', () => {
     expect(response.status).toBe('queued');
   });
 
-  it('rejects when job already active for different repo', () => {
+  it('creates a separate job when another repo is already active', () => {
     const job1 = manager.createJob({ repoUrl: 'https://github.com/user/repo1' });
     manager.updateJob(job1.id, { status: 'analyzing' });
-    expect(() => manager.createJob({ repoUrl: 'https://github.com/user/repo2' })).toThrow(
-      /already in progress/,
-    );
+    const job2 = manager.createJob({ repoUrl: 'https://github.com/user/repo2' });
+    expect(job2.id).not.toBe(job1.id);
   });
 
   it('returns existing job for same repo URL', () => {
@@ -57,5 +56,23 @@ describe('analyze API logic', () => {
     expect(events[1].phase).toBe('calls');
     expect(events[2].phase).toBe('complete');
     expect(events[2].percent).toBe(100);
+  });
+
+  it('does not write job progress directly to server logs', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const job = manager.createJob({ repoPath: '/repo/memory' });
+
+    manager.updateJob(job.id, {
+      status: 'analyzing',
+      progress: {
+        phase: 'enriching',
+        percent: 0,
+        message: '[memory] phase=parse marker=start heapUsedMb=10 rssMb=20 retainedResults=1',
+      },
+    });
+
+    expect(info).not.toHaveBeenCalled();
+
+    info.mockRestore();
   });
 });

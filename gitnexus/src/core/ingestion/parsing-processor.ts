@@ -110,15 +110,6 @@ const processParsingWithWorkers = async (
 
   const total = files.length;
 
-  // Dispatch to worker pool — pool handles splitting into chunks and sub-batching
-  const chunkResults = await workerPool.dispatch<ParseWorkerInput, ParseWorkerResult>(
-    parseableFiles,
-    (filesProcessed) => {
-      onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
-    },
-  );
-
-  // Merge results from all workers into graph and symbol table
   const allImports: ExtractedImport[] = [];
   const allCalls: ExtractedCall[] = [];
   const allAssignments: ExtractedAssignment[] = [];
@@ -131,7 +122,9 @@ const processParsingWithWorkers = async (
   const allConstructorBindings: FileConstructorBindings[] = [];
   const fileScopeBindingsByFile: FileScopeBindings[] = [];
   const allParsedFiles: ParsedFile[] = [];
-  for (const result of chunkResults) {
+  const skippedLanguages = new Map<string, number>();
+
+  const mergeWorkerResult = (result: ParseWorkerResult) => {
     for (const node of result.nodes) {
       graph.addNode({
         id: node.id,
@@ -168,20 +161,21 @@ const processParsingWithWorkers = async (
     for (const item of result.constructorBindings) allConstructorBindings.push(item);
     if (result.fileScopeBindings)
       for (const item of result.fileScopeBindings) fileScopeBindingsByFile.push(item);
-    // RFC #909 Ring 2: aggregate per-file scope artifacts. Tolerant of
-    // workers that don't emit the field yet (older worker builds or
-    // partial rollouts), since the additive contract means undefined =
-    // "this worker produced no ParsedFiles for this chunk".
     if (result.parsedFiles) for (const item of result.parsedFiles) allParsedFiles.push(item);
-  }
 
-  // Merge and log skipped languages from workers
-  const skippedLanguages = new Map<string, number>();
-  for (const result of chunkResults) {
     for (const [lang, count] of Object.entries(result.skippedLanguages)) {
       skippedLanguages.set(lang, (skippedLanguages.get(lang) || 0) + count);
     }
-  }
+  };
+
+  await workerPool.dispatch<ParseWorkerInput, ParseWorkerResult>(
+    parseableFiles,
+    (filesProcessed) => {
+      onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
+    },
+    mergeWorkerResult,
+  );
+
   if (skippedLanguages.size > 0) {
     const summary = Array.from(skippedLanguages.entries())
       .map(([lang, count]) => `${lang}: ${count}`)

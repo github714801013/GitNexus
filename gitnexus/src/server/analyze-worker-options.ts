@@ -1,8 +1,8 @@
-export const DEFAULT_ANALYZE_WORKER_HEAP_MB = 8192;
+const FALLBACK_ANALYZE_WORKER_HEAP_MB = 32768;
 
 export const getAnalyzeWorkerHeapMb = (
   rawValue: string | undefined,
-  fallback = DEFAULT_ANALYZE_WORKER_HEAP_MB,
+  fallback = FALLBACK_ANALYZE_WORKER_HEAP_MB,
 ): number => {
   if (!rawValue) return fallback;
   const parsed = Number.parseInt(rawValue, 10);

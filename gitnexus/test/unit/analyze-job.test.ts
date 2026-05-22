@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'events';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JobManager } from '../../src/server/analyze-job.js';
 
 describe('JobManager', () => {
@@ -29,12 +30,12 @@ describe('JobManager', () => {
     expect(manager.getJob('nonexistent')).toBeUndefined();
   });
 
-  it('enforces single-slot concurrency', () => {
+  it('allows active jobs for different repositories', () => {
     const job1 = manager.createJob({ repoUrl: 'https://github.com/user/repo1' });
     manager.updateJob(job1.id, { status: 'analyzing' });
-    expect(() => manager.createJob({ repoUrl: 'https://github.com/user/repo2' })).toThrow(
-      /already in progress/,
-    );
+    const job2 = manager.createJob({ repoUrl: 'https://github.com/user/repo2' });
+    expect(job2.id).not.toBe(job1.id);
+    expect(job2.status).toBe('queued');
   });
 
   it('allows new job after previous completes', () => {
@@ -127,5 +128,23 @@ describe('JobManager', () => {
 
   it('cancelJob returns false for unknown job', () => {
     expect(manager.cancelJob('nonexistent')).toBe(false);
+  });
+
+  it('does not cancel a registered child process because of a fixed analysis timeout', () => {
+    vi.useFakeTimers();
+    try {
+      const job = manager.createJob({ repoUrl: 'https://github.com/user/slow-repo' });
+      manager.updateJob(job.id, { status: 'analyzing' });
+      const child = new EventEmitter() as any;
+      child.kill = vi.fn();
+
+      manager.registerChild(job.id, child);
+      vi.advanceTimersByTime(31 * 60 * 1000);
+
+      expect(manager.getJob(job.id)!.status).toBe('analyzing');
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

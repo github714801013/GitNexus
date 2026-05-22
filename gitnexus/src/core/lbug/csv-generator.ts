@@ -21,6 +21,14 @@ import { NodeTableName } from './schema.js';
 
 /** Flush buffered rows to disk every N rows */
 const FLUSH_EVERY = 500;
+const DEFAULT_CONTENT_CACHE_SIZE = 300;
+
+export const getCSVContentCacheSize = (
+  raw = process.env.GITNEXUS_CSV_CONTENT_CACHE_SIZE,
+): number => {
+  const parsed = Number.parseInt(raw ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CONTENT_CACHE_SIZE;
+};
 
 // ============================================================================
 // CSV ESCAPE UTILITIES
@@ -76,7 +84,7 @@ class FileContentCache {
   private maxSize: number;
   private repoPath: string;
 
-  constructor(repoPath: string, maxSize: number = 3000) {
+  constructor(repoPath: string, maxSize: number = getCSVContentCacheSize()) {
     this.repoPath = repoPath;
     this.maxSize = maxSize;
   }

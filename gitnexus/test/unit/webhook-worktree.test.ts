@@ -1,3 +1,4 @@
+import { execFile } from 'child_process';
 import { mkdtemp, mkdir, readFile, writeFile } from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -14,8 +15,21 @@ import {
   getManagedWorktreePath,
   parseGiteaWebhookRepo,
   parseAllowedEnvs,
+  ensureLocalWorktree,
   upsertWebhookRepoConfig,
 } from '../../src/server/webhook-worktree.js';
+
+const git = (args: string[], cwd: string): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const proc = execFile('git', args, { cwd }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(stderr || error.message));
+      } else {
+        resolve(stdout.trim());
+      }
+    });
+    proc.stdin?.end();
+  });
 
 describe('webhook worktree helpers', () => {
   it('parses allowed envs and rejects envs outside the allow list', () => {
@@ -101,6 +115,49 @@ describe('webhook worktree helpers', () => {
     expect(getLegacyManagedWorktreePath('dev', 'api')).toBe(
       path.join(os.homedir(), '.gitnexus', 'worktrees', 'dev-api'),
     );
+  });
+
+  it('resets an existing managed worktree to the requested source ref', async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-worktree-reset-test-'));
+    const remoteRepo = path.join(tempRoot, 'remote.git');
+    const mainRepo = path.join(tempRoot, 'main');
+    const worktree = path.join(tempRoot, 'dev-api');
+    await mkdir(tempRoot, { recursive: true });
+    await git(['init', '--bare', remoteRepo], tempRoot);
+    await git(['clone', remoteRepo, mainRepo], tempRoot);
+    await git(['config', 'user.email', 'gitnexus@example.com'], mainRepo);
+    await git(['config', 'user.name', 'GitNexus Test'], mainRepo);
+    await writeFile(path.join(mainRepo, 'app.txt'), 'one');
+    await git(['add', 'app.txt'], mainRepo);
+    await git(['commit', '-m', 'one'], mainRepo);
+    await git(['push', 'origin', 'HEAD:master'], mainRepo);
+    const firstCommit = await git(['rev-parse', 'HEAD'], mainRepo);
+
+    const first = await ensureLocalWorktree({
+      mainRepoPath: mainRepo,
+      worktreePath: worktree,
+      branch: 'dev-api',
+      baseRef: 'origin/master',
+      resetToRef: 'origin/master',
+    });
+    expect(first.commit).toBe(firstCommit);
+
+    await writeFile(path.join(mainRepo, 'app.txt'), 'two');
+    await git(['add', 'app.txt'], mainRepo);
+    await git(['commit', '-m', 'two'], mainRepo);
+    await git(['push', 'origin', 'HEAD:master'], mainRepo);
+    const secondCommit = await git(['rev-parse', 'HEAD'], mainRepo);
+
+    const second = await ensureLocalWorktree({
+      mainRepoPath: mainRepo,
+      worktreePath: worktree,
+      branch: 'dev-api',
+      baseRef: 'origin/master',
+      resetToRef: 'origin/master',
+    });
+
+    expect(second.commit).toBe(secondCommit);
+    expect(await git(['rev-parse', 'HEAD'], worktree)).toBe(secondCommit);
   });
 
   it('copies a main index and rewrites meta for the worktree registry entry', async () => {

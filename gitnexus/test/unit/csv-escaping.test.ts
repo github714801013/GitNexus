@@ -10,7 +10,25 @@ import {
   escapeCSVNumber,
   sanitizeUTF8,
   isBinaryContent,
+  getCSVContentCacheSize,
 } from '../../src/core/lbug/csv-generator.js';
+
+// ─── CSV content cache size ─────────────────────────────────────────────
+
+describe('getCSVContentCacheSize', () => {
+  it('defaults to 300 files', () => {
+    expect(getCSVContentCacheSize(undefined)).toBe(300);
+  });
+
+  it('uses a positive integer override', () => {
+    expect(getCSVContentCacheSize('50')).toBe(50);
+  });
+
+  it('falls back for invalid overrides', () => {
+    expect(getCSVContentCacheSize('0')).toBe(300);
+    expect(getCSVContentCacheSize('abc')).toBe(300);
+  });
+});
 
 // ─── escapeCSVField ──────────────────────────────────────────────────
 

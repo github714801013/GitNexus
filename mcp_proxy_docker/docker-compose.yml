@@ -92,6 +92,7 @@ services:
       - /home/ji99/.lbdb:/root/.lbdb
       - zoekt-index:/data/zoekt-index
     environment:
+      - NODE_OPTIONS=--max-old-space-size=32768
       - GITEA_TOKEN=${GITEA_TOKEN}
       - GITNEXUS_EMBEDDING_URL=http://10.1.14.177:8001/v1
       - GITNEXUS_INDEX_EMBEDDING_URL=http://10.1.14.177:8002/v1
@@ -101,15 +102,18 @@ services:
       - GITNEXUS_EMBEDDING_BATCH_SIZE=${GITNEXUS_EMBEDDING_BATCH_SIZE:-1}
       - GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=3600000
       - GITNEXUS_WEBHOOK_ALLOWED_ENVS=dev
-      - GITNEXUS_ANALYZE_MAX_OLD_SPACE_MB=${GITNEXUS_ANALYZE_MAX_OLD_SPACE_MB:-16384}
+      - GITNEXUS_ANALYZE_MAX_OLD_SPACE_MB=${GITNEXUS_ANALYZE_MAX_OLD_SPACE_MB:-32768}
       - GITNEXUS_MAX_FILE_SIZE_BYTES=5242880
       - GITNEXUS_MAX_PROCESSES=1000
       - GITNEXUS_EMBEDDING_LIMIT=20000000
       - GITNEXUS_ALLOW_REMOTE_MODELS=true
+      - GITNEXUS_PIPELINE_MEMORY_LOG=1
       - ZOEKT_ENDPOINTS=http://zoekt-webserver:6070
       - ZOEKT_TRIGGER_DIR=/data/zoekt-index/triggers
     depends_on:
       - zoekt-webserver
+    mem_limit: 40g
+    memswap_limit: 40g
     stop_grace_period: 5m
     restart: always
 

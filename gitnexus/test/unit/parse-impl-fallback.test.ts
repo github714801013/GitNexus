@@ -18,8 +18,10 @@ import path from 'node:path';
 
 // Spies captured from the module mocks below — populated per-test.
 const spies = {
+  astCacheMaxSizes: [] as number[],
   astCacheClearCalls: 0,
   resetSpies() {
+    this.astCacheMaxSizes = [];
     this.astCacheClearCalls = 0;
   },
 };
@@ -75,6 +77,7 @@ vi.mock('../../src/core/ingestion/ast-cache.js', async (importOriginal) => {
   return {
     ...actual,
     createASTCache: (max?: number) => {
+      spies.astCacheMaxSizes.push(max ?? 50);
       const cache = actual.createASTCache(max);
       const origClear = cache.clear.bind(cache);
       cache.clear = () => {
@@ -248,5 +251,31 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
 
     expect(result.usedWorkerPool).toBe(false);
     expect(workerPoolSpies.createWorkerPoolCalls).toBe(0);
+  });
+
+  it('caps the sequential scope tree cache for C# repos', async () => {
+    const graph = createKnowledgeGraph();
+    const files = Array.from({ length: 16 }, (_, i) => `src/File${i}.cs`);
+    repoPath = makeTempRepo(
+      Object.fromEntries(
+        files.map((file, i) => [
+          file,
+          `namespace Demo { public class File${i} { public int Value() { return ${i}; } } }\n`,
+        ]),
+      ),
+    );
+
+    await runChunkedParseAndResolve(
+      graph,
+      scanned(repoPath, files),
+      files,
+      files.length,
+      repoPath,
+      Date.now(),
+      () => {},
+      { skipWorkers: true },
+    );
+
+    expect(spies.astCacheMaxSizes[1]).toBe(300);
   });
 });
