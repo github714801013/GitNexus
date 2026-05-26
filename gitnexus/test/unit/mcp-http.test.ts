@@ -167,7 +167,7 @@ describe('mountMCPEndpoints close handling', () => {
       {
         headers: {
           projects: 'dev-api, saas-api',
-          env: 'dev',
+          env: 'pro,dev',
         },
       },
       {},
@@ -175,7 +175,7 @@ describe('mountMCPEndpoints close handling', () => {
 
     expect(createMCPServer).toHaveBeenCalledWith(
       {},
-      { projects: ['dev-api', 'saas-api'], envs: ['dev'] },
+      { projects: ['dev-api', 'saas-api'], envs: ['pro', 'dev'] },
     );
   });
 });

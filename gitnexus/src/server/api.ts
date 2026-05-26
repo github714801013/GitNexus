@@ -28,7 +28,11 @@ import {
   closeLbug,
   withLbugDb,
 } from '../core/lbug/lbug-adapter.js';
-import { isWriteQuery } from '../core/lbug/pool-adapter.js';
+import {
+  closeLbug as closePooledLbug,
+  initLbug as initPooledLbug,
+  isWriteQuery,
+} from '../core/lbug/pool-adapter.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
@@ -64,6 +68,66 @@ const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
 const DEFAULT_WEBHOOK_ANALYZE_CONCURRENCY = 1;
 const MEMORY_PROGRESS_PREFIX = '[memory] ';
+const PROJECT_DISCOVERY_MAX_DEPTH = 4;
+
+export const isRepairableIndexError = (err: unknown): boolean => {
+  const msg = String(err instanceof Error ? err.message : err).toLowerCase();
+  return (
+    msg.includes('ladybugdb not found') ||
+    msg.includes('ladybugdb not initialized') ||
+    msg.includes('failed integrity check') ||
+    msg.includes('mmap') ||
+    msg.includes('run: gitnexus analyze')
+  );
+};
+
+export const repoNameFromPath = (repoPath: string): string => path.basename(repoPath);
+
+export const shouldScheduleStartupEmbeddings = (
+  meta: { stats?: { nodes?: number; embeddings?: number } } | null | undefined,
+): boolean => {
+  const nodes = meta?.stats?.nodes ?? 0;
+  const embeddings = meta?.stats?.embeddings ?? 0;
+  return nodes > 0 && embeddings <= 0;
+};
+
+const pathExists = async (targetPath: string): Promise<boolean> =>
+  fs.access(targetPath).then(
+    () => true,
+    () => false,
+  );
+
+const discoverProjectRepoPaths = async (
+  projectsRoot: string,
+  maxDepth = PROJECT_DISCOVERY_MAX_DEPTH,
+): Promise<string[]> => {
+  const repoPaths = new Set<string>();
+  const root = path.resolve(projectsRoot);
+
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > maxDepth) return;
+    if (await pathExists(path.join(dir, '.git'))) {
+      repoPaths.add(dir);
+      return;
+    }
+
+    let entries: import('fs').Dirent[] = [];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name === '.git' || entry.name === '.gitnexus') continue;
+      await walk(path.join(dir, entry.name), depth + 1);
+    }
+  };
+
+  await walk(root, 0);
+  return [...repoPaths].sort();
+};
 
 const sanitizeWorkerDiagnostic = (value: string, maxLength = 240): string =>
   value.slice(0, maxLength).replace(/[\x00-\x1f\x7f]/g, '?');
@@ -104,6 +168,11 @@ function logMemoryProgress(jobId: string, repoPath: string, message: unknown): v
   );
   console.info(`[memory] jobId=${safeJobId} repo=${repoName} ${suffix}`);
 }
+
+export const shouldTreatAnalyzeWorkerExitAsCrash = (
+  jobStatus: string | undefined,
+  workerReportedTerminal: boolean,
+): boolean => !workerReportedTerminal && jobStatus !== 'complete' && jobStatus !== 'failed';
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -581,6 +650,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     let stderrChunks = '';
     let lastProgressMessage = '';
     let lastMemoryProgressMessage = '';
+    let workerReportedTerminal = false;
     child.stderr?.on('data', (chunk: Buffer) => {
       stderrChunks += chunk.toString();
       if (stderrChunks.length > 65536) stderrChunks = stderrChunks.slice(-65536);
@@ -600,6 +670,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
         });
       } else if (msg.type === 'complete') {
+        workerReportedTerminal = true;
         releaseRepoLock(analyzeLockKey);
         backend
           .refreshListReposCache()
@@ -614,6 +685,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             });
           });
       } else if (msg.type === 'error') {
+        workerReportedTerminal = true;
         releaseRepoLock(analyzeLockKey);
         jobManager.updateJob(job.id, { status: 'failed', error: msg.message });
       }
@@ -629,7 +701,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
     child.on('exit', (code) => {
       const currentJob = jobManager.getJob(job.id);
-      if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed') return;
+      if (!shouldTreatAnalyzeWorkerExitAsCrash(currentJob?.status, workerReportedTerminal)) return;
       releaseRepoLock(analyzeLockKey);
       const diagnostics = formatWorkerCrashDiagnostics(
         job.id,
@@ -790,7 +862,101 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
   };
 
+  const scheduleStartupIndexHealthCheck = async (): Promise<void> => {
+    const projectsRoot = getProjectsRoot();
+    const registeredBeforeSync = await listRegisteredRepos().catch((err) => {
+      console.warn('[webhook] startup registry sync skipped:', err);
+      return [];
+    });
+    const registeredPaths = new Set(registeredBeforeSync.map((entry) => path.resolve(entry.path)));
+    const projectRepoPaths = await discoverProjectRepoPaths(projectsRoot);
+
+    for (const repoPath of projectRepoPaths) {
+      const resolvedRepoPath = path.resolve(repoPath);
+      if (registeredPaths.has(resolvedRepoPath)) continue;
+      const repoName = repoNameFromPath(resolvedRepoPath);
+      const meta = await loadMeta(getStoragePath(resolvedRepoPath));
+      if (meta) {
+        await registerRepo(resolvedRepoPath, meta, { name: repoName });
+        registeredPaths.add(resolvedRepoPath);
+        console.info(`[webhook] registered discovered project repo for MCP repo=${repoName}`);
+        continue;
+      }
+
+      console.warn(
+        `[webhook] discovered project repo missing MCP index repo=${repoName}; enqueue analyze`,
+      );
+      const queued = enqueueWebhookAnalyze(resolvedRepoPath, { repoName });
+      queued.done.catch((analyzeErr) => {
+        console.error(
+          `[webhook] discovered project repo analyze failed for ${repoName}:`,
+          analyzeErr,
+        );
+      });
+    }
+
+    await backend.refreshListReposCache().catch((err) => {
+      console.warn('[webhook] refresh repo cache after project discovery failed:', err);
+    });
+
+    const entries = await listRegisteredRepos().catch((err) => {
+      console.warn('[webhook] startup index health check skipped:', err);
+      return [];
+    });
+
+    for (const entry of entries) {
+      const repoPath = entry.path;
+      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const meta = await loadMeta(entry.storagePath);
+      const needsEmbeddings = shouldScheduleStartupEmbeddings(meta);
+      try {
+        await initPooledLbug(entry.name, lbugPath);
+        await closePooledLbug(entry.name);
+      } catch (err) {
+        await closePooledLbug(entry.name).catch(() => {});
+        if (!isRepairableIndexError(err)) {
+          console.warn(
+            `[webhook] startup index health check skipped repo=${entry.name}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          continue;
+        }
+
+        console.warn(
+          `[webhook] startup index health check detected damaged index repo=${entry.name}; enqueue analyze`,
+        );
+        const queued = enqueueWebhookAnalyze(repoPath, {
+          repoName: entry.name,
+          embeddings: needsEmbeddings || undefined,
+          registryName: entry.name,
+          registryBranch: entry.branch,
+        });
+        queued.done.catch((analyzeErr) => {
+          console.error(`[webhook] startup index repair failed for ${entry.name}:`, analyzeErr);
+        });
+        continue;
+      }
+
+      if (needsEmbeddings) {
+        console.warn(
+          `[webhook] startup embedding health check detected missing vectors repo=${entry.name}; enqueue analyze with embeddings`,
+        );
+        const queued = enqueueWebhookAnalyze(repoPath, {
+          repoName: entry.name,
+          embeddings: true,
+          registryName: entry.name,
+          registryBranch: entry.branch,
+        });
+        queued.done.catch((analyzeErr) => {
+          console.error(`[webhook] startup embedding repair failed for ${entry.name}:`, analyzeErr);
+        });
+      }
+    }
+  };
+
   void scheduleStartupWebhookRepos();
+  void scheduleStartupIndexHealthCheck();
 
   /**
    * Maximum time the hold-queue will wait for an active analysis job to complete.
@@ -1724,6 +1890,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             let stderrChunks = '';
             let lastProgressMessage = '';
             let lastMemoryProgressMessage = '';
+            let workerReportedTerminal = false;
             child.stderr?.on('data', (chunk: Buffer) => {
               stderrChunks += chunk.toString();
               if (stderrChunks.length > 65536) stderrChunks = stderrChunks.slice(-65536);
@@ -1743,6 +1910,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
                 });
               } else if (msg.type === 'complete') {
+                workerReportedTerminal = true;
                 releaseRepoLock(analyzeLockKey);
                 // Refresh backend repo cache BEFORE marking complete — ensures the new
                 // repo is queryable when the client receives the SSE complete event.
@@ -1762,6 +1930,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                     });
                   });
               } else if (msg.type === 'error') {
+                workerReportedTerminal = true;
                 releaseRepoLock(analyzeLockKey);
                 jobManager.updateJob(job.id, {
                   status: 'failed',
@@ -1780,7 +1949,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
             child.on('exit', (code) => {
               const j = jobManager.getJob(job.id);
-              if (!j || j.status === 'complete' || j.status === 'failed') return;
+              if (!shouldTreatAnalyzeWorkerExitAsCrash(j?.status, workerReportedTerminal)) return;
 
               // Worker crashed — attempt retry if under the limit
               if (j.retryCount < MAX_WORKER_RETRIES) {

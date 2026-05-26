@@ -203,12 +203,12 @@ describe('LocalBackend.callTool', () => {
 
   it('query tool returns error for empty query', async () => {
     const result = await backend.callTool('query', { query: '' });
-    expect(result.error).toContain('query parameter is required');
+    expect(result.error).toContain('query or zoekt parameter is required');
   });
 
   it('query tool returns error for whitespace-only query', async () => {
     const result = await backend.callTool('query', { query: '   ' });
-    expect(result.error).toContain('query parameter is required');
+    expect(result.error).toContain('query or zoekt parameter is required');
   });
 
   it('dispatches cypher tool and blocks write queries', async () => {
@@ -721,12 +721,144 @@ describe('LocalBackend.resolveRepo', () => {
     );
   });
 
-  it('throws for ambiguous repos without param', async () => {
+  it('loops across repos for query when no repo is provided', async () => {
     setupMultipleRepos();
     await backend.init();
-    await expect(backend.callTool('query', { query: 'test' })).rejects.toThrow(
-      'Multiple repositories indexed',
-    );
+    vi.spyOn(backend as any, 'query').mockImplementation(async (repo: any) => ({
+      processes: [{ id: 'shared-process-id', priority: 1, summary: repo.name }],
+      process_symbols: [],
+      definitions: [],
+    }));
+
+    const result = await backend.callTool('query', { query: 'test' });
+
+    expect(result.processes).toHaveLength(2);
+    expect(result.processes.map((process: any) => process.repo)).toEqual([
+      'test-project',
+      'other-project',
+    ]);
+  });
+
+  it('keeps cross-repo query results when one repo throws', async () => {
+    setupMultipleRepos();
+    await backend.init();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(backend as any, 'query').mockImplementation(async (repo: any) => {
+      if (repo.name === 'other-project') throw new Error('not a git repository');
+      return {
+        processes: [{ id: 'process-id', priority: 1, summary: repo.name }],
+        process_symbols: [],
+        definitions: [],
+      };
+    });
+
+    const result = await backend.callTool('query', { query: 'test' });
+
+    expect(result.processes).toHaveLength(1);
+    expect(result.processes[0].repo).toBe('test-project');
+    expect(result.errors).toEqual([{ repo: 'other-project', error: 'not a git repository' }]);
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it('keeps auto-discovered query results when one discovered repo throws', async () => {
+    setupMultipleRepos();
+    await backend.init();
+    const repos = [...(backend as any).repos.values()];
+    vi.spyOn(backend as any, 'discoveryReposViaZoekt').mockResolvedValue(repos);
+    vi.spyOn(backend as any, 'query').mockImplementation(async (repo: any) => {
+      if (repo.name === 'other-project') throw new Error('index unavailable');
+      return {
+        processes: [{ id: 'process-id', priority: 1, summary: repo.name }],
+        process_symbols: [],
+        definitions: [],
+      };
+    });
+
+    const result = await backend.callTool('query', { query: 'test' });
+
+    expect(result.processes).toHaveLength(1);
+    expect(result.processes[0].repo).toBe('test-project');
+    expect(result.errors).toEqual([{ repo: 'other-project', error: 'index unavailable' }]);
+  });
+
+  it('loops across repos for route_map when no repo is provided', async () => {
+    setupMultipleRepos();
+    await backend.init();
+    vi.spyOn(backend as any, 'routeMap').mockImplementation(async (repo: any) => ({
+      routes: [{ route: `/api/${repo.name}`, handler: `${repo.name}/route.ts` }],
+      total: 1,
+    }));
+
+    const result = await backend.callTool('route_map', { route: '/api' });
+
+    expect(result.total).toBe(2);
+    expect(result.routes.map((route: any) => route.repo)).toEqual([
+      'test-project',
+      'other-project',
+    ]);
+    expect(result.routes.map((route: any) => route.route)).toEqual([
+      '/api/test-project',
+      '/api/other-project',
+    ]);
+  });
+
+  it('keeps cross-repo route_map results when one repo throws', async () => {
+    setupMultipleRepos();
+    await backend.init();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(backend as any, 'routeMap').mockImplementation(async (repo: any) => {
+      if (repo.name === 'other-project') throw new Error('index unavailable');
+      return {
+        routes: [{ route: `/api/${repo.name}`, handler: `${repo.name}/route.ts` }],
+        total: 1,
+      };
+    });
+
+    const result = await backend.callTool('route_map', { route: '/api' });
+
+    expect(result.total).toBe(1);
+    expect(result.routes.map((route: any) => route.repo)).toEqual(['test-project']);
+    expect(result.errors).toEqual([{ repo: 'other-project', error: 'index unavailable' }]);
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it('loops across repos for cypher when no repo is provided', async () => {
+    setupMultipleRepos();
+    await backend.init();
+    vi.spyOn(backend as any, 'cypher').mockImplementation(async (repo: any) => [
+      { name: `Symbol in ${repo.name}` },
+    ]);
+
+    const result = await backend.callTool('cypher', {
+      query: 'MATCH (n:Function) RETURN n.name AS name',
+    });
+
+    expect(result.row_count).toBe(2);
+    expect(result.markdown).toContain('test-project');
+    expect(result.markdown).toContain('other-project');
+    expect(result.markdown).toContain('Symbol in test-project');
+    expect(result.markdown).toContain('Symbol in other-project');
+  });
+
+  it('keeps cross-repo cypher rows when one repo throws', async () => {
+    setupMultipleRepos();
+    await backend.init();
+    vi.spyOn(backend as any, 'cypher').mockImplementation(async (repo: any) => {
+      if (repo.name === 'other-project') throw new Error('not a git repository');
+      return [{ name: `Symbol in ${repo.name}` }];
+    });
+
+    const result = await backend.callTool('cypher', {
+      query: 'MATCH (n:Function) RETURN n.name AS name',
+    });
+
+    expect(result.row_count).toBe(1);
+    expect(result.markdown).toContain('test-project');
+    expect(result.markdown).toContain('Symbol in test-project');
+    expect(result.markdown).not.toContain('other-project');
+    expect(result.errors).toEqual([{ repo: 'other-project', error: 'not a git repository' }]);
   });
 
   it('resolves repo by name parameter', async () => {

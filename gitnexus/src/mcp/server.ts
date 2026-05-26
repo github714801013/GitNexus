@@ -188,7 +188,9 @@ export function createMCPServer(backend: LocalBackend, repoScope?: MCPRepoScopeI
           (i && i.startsWith(prefix)) ||
           (pathBaseName && pathBaseName.startsWith(prefix)),
       );
-    const matchesEnv = baseEnvRequested ? !hasKnownEnvPrefix : !envPrefixes || matchesEnvPrefix;
+    const matchesBaseEnv = baseEnvRequested && !hasKnownEnvPrefix;
+    const matchesEnv =
+      !envPrefixes && !baseEnvRequested ? true : matchesBaseEnv || matchesEnvPrefix;
     return Boolean(matchesProject && matchesEnv);
   };
   const hasScope =

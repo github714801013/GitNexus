@@ -198,6 +198,12 @@ const runGit = (args: string[], cwd: string): Promise<string> =>
     });
   });
 
+const fetchOriginRef = async (ref: string | undefined, cwd: string): Promise<void> => {
+  if (!ref?.startsWith('origin/')) return;
+  const branch = ref.slice('origin/'.length);
+  await runGit(['fetch', 'origin', `${branch}:refs/remotes/origin/${branch}`, '--depth', '1'], cwd);
+};
+
 export interface EnsureWorktreeParams {
   mainRepoPath: string;
   worktreePath: string;
@@ -231,12 +237,7 @@ export const ensureLocalWorktree = async (
   } else {
     await fs.mkdir(path.dirname(params.worktreePath), { recursive: true });
     const hasBranch = await runGit(['branch', '--list', params.branch], params.mainRepoPath);
-    if (!hasBranch && params.baseRef?.startsWith('origin/')) {
-      await runGit(
-        ['fetch', 'origin', params.baseRef.slice('origin/'.length), '--depth', '1'],
-        params.mainRepoPath,
-      );
-    }
+    await fetchOriginRef(params.baseRef, params.mainRepoPath);
     const args = hasBranch
       ? ['worktree', 'add', params.worktreePath, params.branch]
       : ['worktree', 'add', '-b', params.branch, params.worktreePath, params.baseRef ?? 'main'];
@@ -249,10 +250,7 @@ export const ensureLocalWorktree = async (
   }
   if (params.resetToRef) {
     if (params.resetToRef.startsWith('origin/')) {
-      await runGit(
-        ['fetch', 'origin', params.resetToRef.slice('origin/'.length), '--depth', '1'],
-        params.worktreePath,
-      );
+      await fetchOriginRef(params.resetToRef, params.worktreePath);
       await runGit(['reset', '--hard', 'FETCH_HEAD'], params.worktreePath);
     } else {
       await runGit(['reset', '--hard', params.resetToRef], params.worktreePath);

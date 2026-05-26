@@ -23,7 +23,12 @@ export const getCurrentCommit = (repoPath: string): string => {
 
 export const getCurrentBranch = (repoPath: string): string => {
   try {
-    return execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoPath, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    return execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
   } catch {
     return '';
   }
@@ -94,7 +99,12 @@ export const getRemoteUrl = (repoPath: string): string | undefined => {
  */
 export const getGitRoot = (fromPath: string): string | null => {
   try {
-    const raw = execSync('git rev-parse --show-toplevel', { cwd: fromPath }).toString().trim();
+    const raw = execSync('git rev-parse --show-toplevel', {
+      cwd: fromPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
     // On Windows, git returns /d/Projects/Foo — path.resolve normalizes to D:\Projects\Foo
     return path.resolve(raw);
   } catch {

@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JobManager } from '../../src/server/analyze-job.js';
+import {
+  isRepairableIndexError,
+  shouldScheduleStartupEmbeddings,
+  shouldTreatAnalyzeWorkerExitAsCrash,
+} from '../../src/server/api.js';
 
 describe('analyze API logic', () => {
   let manager: JobManager;
@@ -74,5 +79,30 @@ describe('analyze API logic', () => {
     expect(info).not.toHaveBeenCalled();
 
     info.mockRestore();
+  });
+
+  it('does not treat exit after worker terminal message as a crash', () => {
+    expect(shouldTreatAnalyzeWorkerExitAsCrash('analyzing', true)).toBe(false);
+    expect(shouldTreatAnalyzeWorkerExitAsCrash('analyzing', false)).toBe(true);
+  });
+
+  it('classifies damaged LadybugDB indexes as repairable', () => {
+    expect(isRepairableIndexError(new Error('LadybugDB not initialized for repo "x"'))).toBe(true);
+    expect(
+      isRepairableIndexError(
+        new Error('LadybugDB at /repo/.gitnexus/lbug failed integrity check: Mmap failed'),
+      ),
+    ).toBe(true);
+    expect(isRepairableIndexError(new Error('Repository path is not a git repository'))).toBe(
+      false,
+    );
+  });
+
+  it('schedules startup embeddings only for indexed repos without vectors', () => {
+    expect(shouldScheduleStartupEmbeddings({ stats: { nodes: 10, embeddings: 0 } })).toBe(true);
+    expect(shouldScheduleStartupEmbeddings({ stats: { nodes: 10 } })).toBe(true);
+    expect(shouldScheduleStartupEmbeddings({ stats: { nodes: 10, embeddings: 3 } })).toBe(false);
+    expect(shouldScheduleStartupEmbeddings({ stats: { nodes: 0, embeddings: 0 } })).toBe(false);
+    expect(shouldScheduleStartupEmbeddings(null)).toBe(false);
   });
 });

@@ -2,7 +2,9 @@
  * MCP Tool Definitions
  *
  * Defines the tools that GitNexus exposes to external AI agents.
- * All tools support an optional `repo` parameter for multi-repo setups.
+ * Search/read-only tools can omit `repo` in multi-repo setups; the backend
+ * searches visible repositories and returns merged results. Repo-specific or
+ * write-like tools still require `repo` when multiple repositories are indexed.
  */
 
 export interface ToolDefinition {
@@ -37,9 +39,11 @@ Returns each repo's name, path, branch, indexed date, last commit, and stats.
 WHEN TO USE: First step when multiple repos are indexed, or to discover available repos.
 AFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work with.
 
-When multiple repos are indexed, graph-backed tools must specify "repo"
-to target the correct one (query, context, impact, cypher, detect_changes,
-rename, route_map, etc.). Use query for Zoekt-backed search across repositories.`,
+When multiple repos are indexed, search/read-only tools such as query, cypher,
+context, route_map, shape_check, tool_map, and api_impact may omit "repo"; the
+service searches visible repositories and returns merged results. Repo-specific
+or write-like tools such as impact, detect_changes, rename, and code_snippet
+should specify "repo".`,
     inputSchema: {
       type: 'object',
       properties: {},
@@ -65,7 +69,7 @@ Hybrid ranking: BM25 keyword + Semantic vector + Zoekt exact/regex search, merge
 
 GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that group (merged via RRF), or "@<groupName>/<groupRepoPath>" to run against a single member (same path keys as in group.yaml). If you use "@<groupName>" only, the member repo defaults to the lexicographically first key in group.yaml "repos". Prefer resources for contracts/status (see migration from legacy group_* tools).
 
-SMART DISCOVERY: In multi-repo setups, you can omit "repo" for the "query" tool only when using Zoekt-backed discovery. When omitting "repo", pass "zoekt"; GitNexus will use Zoekt to identify relevant repositories, perform a full hybrid search on each, and return merged results from all matching projects.
+SMART DISCOVERY: In multi-repo setups, you can omit "repo". GitNexus first tries Zoekt-backed repository discovery when a query/zoekt string is available; if discovery finds no repositories, the service falls back to searching visible repositories and returns merged results.
 
 SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). When "repo" starts with "@", only processes whose symbols fall under that prefix are included. For a normal indexed repo name (no leading @), this field is currently ignored by the server.`,
     inputSchema: {
@@ -112,7 +116,7 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
         repo: {
           type: 'string',
           description:
-            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>" (member path keys from group.yaml). Omit when only one indexed repo exists. If omitted in multi-repo setups, provide "zoekt" for cross-repo Zoekt discovery.',
+            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>" (member path keys from group.yaml). Omit to search visible repositories and merge results in multi-repo setups.',
         },
         service: {
           type: 'string',
@@ -164,6 +168,7 @@ EXAMPLES:
   MATCH (d:Class)-[:CodeRelation {type: 'EXTENDS'}]->(b1), (d)-[:CodeRelation {type: 'EXTENDS'}]->(b2), (b1)-[:CodeRelation {type: 'EXTENDS'}]->(a), (b2)-[:CodeRelation {type: 'EXTENDS'}]->(a) WHERE b1 <> b2 RETURN d.name, b1.name, b2.name, a.name
 
 OUTPUT: Returns { markdown, row_count } — results formatted as a Markdown table for easy reading.
+MULTI-REPO: If "repo" is omitted and multiple repositories are indexed, the service runs the read query against visible repositories and merges rows with a repo column.
 
 TIPS:
 - All relationships use single CodeRelation table — filter with {type: 'CALLS'} etc.
@@ -176,7 +181,8 @@ TIPS:
         query: { type: 'string', description: 'Cypher query to execute' },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description:
+            'Repository name or path. Omit to run the read query across visible repositories in multi-repo setups.',
         },
       },
       required: ['query'],
@@ -197,6 +203,7 @@ Handles disambiguation: if multiple symbols share the same name, returns ranked 
 NOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).
 
 GROUP MODE: set "repo" to "@<groupName>" to run context in each member repo (aggregated list), or "@<groupName>/<groupRepoPath>" for one member. If you use "@<groupName>" only, the member defaults to the lexicographically first key in group.yaml "repos".
+MULTI-REPO: If "repo" is omitted and multiple repositories are indexed, the service searches visible repositories and merges context results with repo labels.
 
 SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", prefix-matches resolved symbol file paths; when a hit is outside the prefix, that member returns an empty payload for the symbol. Ignored for a normal indexed repo name.`,
     inputSchema: {
@@ -221,7 +228,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         repo: {
           type: 'string',
           description:
-            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>". Omit if only one repo is indexed.',
+            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>". Omit to search visible repositories and merge results in multi-repo setups.',
         },
         service: {
           type: 'string',
@@ -431,7 +438,8 @@ Returns: route nodes with their handlers, middleware wrapper chains (e.g., withA
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description:
+            'Repository name or path. Omit to search visible repositories and merge route mappings in multi-repo setups.',
         },
       },
       required: [],
@@ -448,7 +456,11 @@ Returns: tool nodes with their handler files and descriptions.`,
       type: 'object',
       properties: {
         tool: { type: 'string', description: 'Filter by tool name. Omit for all tools.' },
-        repo: { type: 'string', description: 'Repository name or path.' },
+        repo: {
+          type: 'string',
+          description:
+            'Repository name or path. Omit to search visible repositories and merge tool mappings in multi-repo setups.',
+        },
       },
       required: [],
     },
@@ -470,7 +482,8 @@ Returns routes that have both detected response keys AND consumers. Shows top-le
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description:
+            'Repository name or path. Omit to check visible repositories and merge shape-check results in multi-repo setups.',
         },
       },
       required: [],
@@ -490,7 +503,11 @@ Returns: single route object when one match, or { routes: [...], total: N } for 
       properties: {
         route: { type: 'string', description: 'Route path (e.g., "/api/grants")' },
         file: { type: 'string', description: 'Handler file path (alternative to route)' },
-        repo: { type: 'string', description: 'Repository name or path.' },
+        repo: {
+          type: 'string',
+          description:
+            'Repository name or path. Omit to check visible repositories and merge API impact results in multi-repo setups.',
+        },
       },
       required: [],
     },

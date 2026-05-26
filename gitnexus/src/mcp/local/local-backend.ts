@@ -236,6 +236,25 @@ type ListRepoEntry = {
   siblings?: Array<{ name: string; path: string; lastCommit: string }>;
 };
 
+const CROSS_REPO_LOOP_TOOLS = new Set([
+  'query',
+  'search',
+  'cypher',
+  'context',
+  'explore',
+  'route_map',
+  'shape_check',
+  'tool_map',
+  'api_impact',
+]);
+
+const RRF_K = 60;
+const SEARCH_SOURCE_WEIGHTS = {
+  bm25: 1,
+  vector: 0.8,
+  zoekt: 1.2,
+} as const;
+
 export class LocalBackend {
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
@@ -761,12 +780,19 @@ export class LocalBackend {
     );
   }
 
+  private getScopedRepos(scope: { exact: string[]; prefixes: string[] } | null): RepoHandle[] {
+    const repos = [...this.repos.values()];
+    return scope ? repos.filter((repo) => this.matchesHeadScope(repo, scope)) : repos;
+  }
+
   /**
    * Merge results from multiple single-repo query calls into one unified response.
    */
   private mergeQueryResults(results: any[]): any {
     if (results.length === 0) return { processes: [], process_symbols: [], definitions: [] };
-    if (results.length === 1) return results[0];
+    if (results.length === 1 && !results[0]?.error && !Array.isArray(results[0]?.errors)) {
+      return results[0];
+    }
 
     const merged = {
       processes: [] as any[],
@@ -774,34 +800,50 @@ export class LocalBackend {
       definitions: [] as any[],
       timing: { wall: 0 } as Record<string, number>,
       warning: undefined as string | undefined,
+      errors: [] as Array<{ repo?: string; error: string }>,
     };
 
     const seenSymbolIds = new Set<string>();
     const seenProcessIds = new Set<string>();
 
     for (const res of results) {
+      if (res?.error) {
+        merged.errors.push({ repo: res.repo, error: String(res.error) });
+        continue;
+      }
+      if (Array.isArray(res?.errors)) {
+        merged.errors.push(
+          ...res.errors.map((error: any) => ({
+            repo: error?.repo,
+            error: String(error?.error ?? error),
+          })),
+        );
+      }
       if (res.processes) {
         for (const p of res.processes) {
-          if (!seenProcessIds.has(p.id)) {
+          const key = `${p.repo ?? ''}:${p.id}`;
+          if (!seenProcessIds.has(key)) {
             merged.processes.push(p);
-            seenProcessIds.add(p.id);
+            seenProcessIds.add(key);
           }
         }
       }
       if (res.process_symbols) {
         for (const s of res.process_symbols) {
-          if (!seenSymbolIds.has(s.id)) {
+          const key = `${s.repo ?? ''}:${s.id}`;
+          if (!seenSymbolIds.has(key)) {
             merged.process_symbols.push(s);
-            seenSymbolIds.add(s.id);
+            seenSymbolIds.add(key);
           }
         }
       }
       if (res.definitions) {
         for (const d of res.definitions) {
-          const key = `${d.filePath}:${d.name}`;
-          if (!seenSymbolIds.has(d.id || key)) {
+          const fallbackKey = `${d.repo ?? ''}:${d.filePath}:${d.name}`;
+          const key = d.id ? `${d.repo ?? ''}:${d.id}` : fallbackKey;
+          if (!seenSymbolIds.has(key)) {
             merged.definitions.push(d);
-            seenSymbolIds.add(d.id || key);
+            seenSymbolIds.add(key);
           }
         }
       }
@@ -815,8 +857,225 @@ export class LocalBackend {
     // Re-sort processes by priority across all repos
     merged.processes.sort((a, b) => b.priority - a.priority).slice(0, 10);
     merged.definitions = merged.definitions.slice(0, 30);
+    if (merged.errors.length === 0) delete (merged as any).errors;
 
     return merged;
+  }
+
+  private addRepoToResult(value: any, repo: RepoHandle): any {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.addRepoToResult(item, repo));
+    }
+    if (value && typeof value === 'object') {
+      const tagged: Record<string, any> = { repo: repo.name };
+      for (const [key, child] of Object.entries(value)) {
+        tagged[key] = this.addRepoToResult(child, repo);
+      }
+      return tagged;
+    }
+    return value;
+  }
+
+  private mergeCrossRepoResults(
+    method: string,
+    entries: Array<{ repo: RepoHandle; result: any }>,
+  ): any {
+    if (entries.length === 0) {
+      return {
+        error: 'No repositories matched the current scope.',
+      };
+    }
+
+    if (method === 'query' || method === 'search') {
+      return this.mergeQueryResults(
+        entries.map((entry) => this.addRepoToResult(entry.result, entry.repo)),
+      );
+    }
+
+    if (method === 'cypher') {
+      const errors: Array<{ repo: string; error: string }> = [];
+      const rows = entries.flatMap((entry) => {
+        if (entry.result?.error) {
+          errors.push({ repo: entry.repo.name, error: String(entry.result.error) });
+          return [];
+        }
+        return Array.isArray(entry.result)
+          ? entry.result.map((row) => this.addRepoToResult(row, entry.repo))
+          : [{ repo: entry.repo.name, result: entry.result }];
+      });
+      const formatted =
+        rows.length > 0 ? this.formatCypherAsMarkdown(rows) : { markdown: '', row_count: 0 };
+      if (errors.length > 0 && formatted && typeof formatted === 'object') {
+        return { ...formatted, errors };
+      }
+      return formatted;
+    }
+
+    const merged: Record<string, any> = {
+      repos: entries.map((entry) => entry.repo.name),
+      total: 0,
+    };
+    const errors: Array<{ repo: string; error: string }> = [];
+
+    for (const entry of entries) {
+      const result = entry.result;
+      if (result?.error) {
+        errors.push({ repo: entry.repo.name, error: String(result.error) });
+        continue;
+      }
+      const normalized =
+        method === 'api_impact' && result && !Array.isArray(result) && !result.routes
+          ? { routes: [result], total: 1 }
+          : result;
+
+      for (const [key, value] of Object.entries(normalized ?? {})) {
+        if (Array.isArray(value)) {
+          merged[key] = [
+            ...(merged[key] ?? []),
+            ...value.map((item) => this.addRepoToResult(item, entry.repo)),
+          ];
+        } else if (typeof value === 'number') {
+          merged[key] = (typeof merged[key] === 'number' ? merged[key] : 0) + value;
+        } else if (merged[key] === undefined && key !== 'message') {
+          merged[key] = value;
+        }
+      }
+    }
+
+    if (errors.length > 0) merged.errors = errors;
+    return merged;
+  }
+
+  private async callSingleRepoTool(method: string, repo: RepoHandle, params: any): Promise<any> {
+    switch (method) {
+      case 'query':
+      case 'search':
+        return this.query(repo, params);
+      case 'cypher':
+        return this.cypher(repo, params);
+      case 'context':
+        return this.context(repo, params);
+      case 'explore':
+        return this.context(repo, { name: params?.name, ...params });
+      case 'route_map':
+        return this.routeMap(repo, params);
+      case 'shape_check':
+        return this.shapeCheck(repo, params);
+      case 'tool_map':
+        return this.toolMap(repo, params);
+      case 'api_impact':
+        return this.apiImpact(repo, params);
+      default:
+        throw new Error(`Unknown cross-repo search tool: ${method}`);
+    }
+  }
+
+  private async callToolAcrossRepos(
+    method: string,
+    params: any,
+    scope: { exact: string[]; prefixes: string[] } | null,
+  ): Promise<any> {
+    const repos = this.getScopedRepos(scope);
+    const entries = await Promise.all(
+      repos.map(async (repo) => {
+        try {
+          return {
+            repo,
+            result: await this.callSingleRepoTool(method, repo, params),
+          };
+        } catch (err) {
+          return {
+            repo,
+            result: { error: err instanceof Error ? err.message : String(err) },
+          };
+        }
+      }),
+    );
+    return this.mergeCrossRepoResults(method, entries);
+  }
+
+  private getZoektHitLine(match: any): number | null {
+    const hitLine =
+      match.lineMatches?.find((line: any) => !line.isContext && Number.isFinite(line.lineNumber))
+        ?.lineNumber ??
+      match.lineMatches?.find((line: any) => Number.isFinite(line.lineNumber))?.lineNumber;
+
+    return Number.isFinite(hitLine) ? hitLine : null;
+  }
+
+  private toZoektSymbol(row: any, match: any): any {
+    const nodeId = row.id ?? row.nodeId ?? row[0];
+    if (!nodeId) return null;
+    return {
+      nodeId,
+      name: row.name ?? row[1] ?? match.fileName.split('/').pop() ?? match.fileName,
+      type: row.type ?? row[2],
+      filePath: row.filePath ?? row[3] ?? match.fileName,
+      startLine: row.startLine ?? row[4],
+      endLine: row.endLine ?? row[5],
+      zoektScore: match.score,
+    };
+  }
+
+  private async resolveZoektMatchSymbols(
+    repo: RepoHandle,
+    matches: any[],
+  ): Promise<Map<number, any>> {
+    const hits = matches
+      .map((match, index) => ({ match, index, lineNumber: this.getZoektHitLine(match) }))
+      .filter(
+        (hit): hit is { match: any; index: number; lineNumber: number } => hit.lineNumber !== null,
+      );
+
+    const resolved = new Map<number, any>();
+    if (hits.length === 0) return resolved;
+
+    const queryParams: Record<string, string | number> = {};
+    const clauses = hits.map((hit, i) => {
+      queryParams[`filePath${i}`] = hit.match.fileName;
+      queryParams[`lineNumber${i}`] = hit.lineNumber;
+      return `(n.filePath = $filePath${i} AND n.startLine <= $lineNumber${i} AND n.endLine >= $lineNumber${i})`;
+    });
+
+    try {
+      const rows = await executeParameterized(
+        repo.id,
+        `
+        MATCH (n)
+        WHERE labels(n)[0] IN ['Function', 'Method', 'Class', 'Interface', 'Constructor', 'Route', 'Tool']
+          AND (${clauses.join(' OR ')})
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+        ORDER BY (n.endLine - n.startLine) ASC
+      `,
+        queryParams,
+      );
+
+      for (const hit of hits) {
+        const row = rows
+          .filter((candidate: any) => {
+            const filePath = candidate.filePath ?? candidate[3];
+            const startLine = candidate.startLine ?? candidate[4];
+            const endLine = candidate.endLine ?? candidate[5];
+            return (
+              filePath === hit.match.fileName &&
+              startLine <= hit.lineNumber &&
+              endLine >= hit.lineNumber
+            );
+          })
+          .sort((a: any, b: any) => {
+            const aWidth = (a.endLine ?? a[5] ?? 0) - (a.startLine ?? a[4] ?? 0);
+            const bWidth = (b.endLine ?? b[5] ?? 0) - (b.startLine ?? b[4] ?? 0);
+            return aWidth - bWidth;
+          })[0];
+        if (row) {
+          const sym = this.toZoektSymbol(row, hit.match);
+          if (sym) resolved.set(hit.index, sym);
+        }
+      }
+    } catch (e) {
+      logQueryError('query:zoekt-symbol-lookup', e);
+    }
+    return resolved;
   }
 
   async callTool(method: string, params: any): Promise<any> {
@@ -852,9 +1111,27 @@ export class LocalBackend {
         console.error(
           `GitNexus: Auto-discovered ${discovered.length} repos for query: ${discovered.map((r) => r.name).join(', ')}`,
         );
-        const results = await Promise.all(discovered.map((repo) => this.query(repo, params)));
-        return this.mergeQueryResults(results);
+        const entries = await Promise.all(
+          discovered.map(async (repo) => {
+            try {
+              return {
+                repo,
+                result: await this.query(repo, params),
+              };
+            } catch (err) {
+              return {
+                repo,
+                result: { error: err instanceof Error ? err.message : String(err) },
+              };
+            }
+          }),
+        );
+        return this.mergeCrossRepoResults(method, entries);
       }
+    }
+
+    if (!p.repo && this.repos.size > 1 && CROSS_REPO_LOOP_TOOLS.has(method)) {
+      return this.callToolAcrossRepos(method, params, headScope);
     }
 
     // Resolve repo from optional param (re-reads registry on miss)
@@ -1099,7 +1376,7 @@ export class LocalBackend {
     for (let i = 0; i < bm25Results.length; i++) {
       const result = bm25Results[i];
       const key = result.nodeId || result.filePath;
-      const rrfScore = 1 / (60 + i);
+      const rrfScore = SEARCH_SOURCE_WEIGHTS.bm25 / (RRF_K + i + 1);
       const existing = scoreMap.get(key);
       if (existing) {
         existing.score += rrfScore;
@@ -1111,7 +1388,7 @@ export class LocalBackend {
     for (let i = 0; i < semanticResults.length; i++) {
       const result = semanticResults[i];
       const key = result.nodeId || result.filePath;
-      const rrfScore = 1 / (60 + i);
+      const rrfScore = SEARCH_SOURCE_WEIGHTS.vector / (RRF_K + i + 1);
       const existing = scoreMap.get(key);
       if (existing) {
         existing.score += rrfScore;
@@ -1121,10 +1398,11 @@ export class LocalBackend {
     }
 
     const zoektMatches = zoektResult.matches || [];
+    const zoektSymbols = await this.resolveZoektMatchSymbols(repo, zoektMatches);
     for (let i = 0; i < zoektMatches.length; i++) {
       const match = zoektMatches[i];
-      // Map Zoekt file match to our symbol-like structure
-      const sym = {
+      // Map Zoekt line hits to graph symbols when possible; file result remains the fallback.
+      const sym = zoektSymbols.get(i) ?? {
         nodeId: `File:${match.fileName}`,
         name: match.fileName.split('/').pop() || match.fileName,
         type: 'File',
@@ -1132,7 +1410,7 @@ export class LocalBackend {
         zoektScore: match.score,
       };
       const key = sym.nodeId;
-      const rrfScore = 1 / (60 + i);
+      const rrfScore = SEARCH_SOURCE_WEIGHTS.zoekt / (RRF_K + i + 1);
       const existing = scoreMap.get(key);
       if (existing) {
         existing.score += rrfScore;

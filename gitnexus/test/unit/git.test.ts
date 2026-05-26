@@ -76,6 +76,17 @@ describe('git utilities', () => {
       expect(getGitRoot('/not-a-repo')).toBeNull();
     });
 
+    it('suppresses stderr when git root lookup fails', () => {
+      mockExecSync.mockImplementationOnce(() => {
+        throw new Error('not a git repo');
+      });
+      expect(getGitRoot('/not-a-repo')).toBeNull();
+      expect(mockExecSync).toHaveBeenCalledWith('git rev-parse --show-toplevel', {
+        cwd: '/not-a-repo',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    });
+
     it('calls git rev-parse --show-toplevel', () => {
       mockExecSync.mockReturnValueOnce(Buffer.from('/repo\n'));
       getGitRoot('/repo/src');

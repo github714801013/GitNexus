@@ -160,6 +160,41 @@ describe('webhook worktree helpers', () => {
     expect(await git(['rev-parse', 'HEAD'], worktree)).toBe(secondCommit);
   });
 
+  it('fetches the requested remote source before adding a new branch worktree', async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-worktree-fetch-test-'));
+    const remoteRepo = path.join(tempRoot, 'remote.git');
+    const mainRepo = path.join(tempRoot, 'main');
+    const worktree = path.join(tempRoot, 'dev-oanew');
+    await mkdir(tempRoot, { recursive: true });
+    await git(['init', '--bare', remoteRepo], tempRoot);
+    await git(['clone', remoteRepo, mainRepo], tempRoot);
+    await git(['config', 'user.email', 'gitnexus@example.com'], mainRepo);
+    await git(['config', 'user.name', 'GitNexus Test'], mainRepo);
+    await writeFile(path.join(mainRepo, 'app.txt'), 'depart');
+    await git(['add', 'app.txt'], mainRepo);
+    await git(['commit', '-m', 'depart'], mainRepo);
+    await git(['push', 'origin', 'HEAD:master_depart_iteng'], mainRepo);
+    await git(
+      ['config', 'remote.origin.fetch', '+refs/heads/master:refs/remotes/origin/master'],
+      mainRepo,
+    );
+    await git(['update-ref', '-d', 'refs/remotes/origin/master_depart_iteng'], mainRepo).catch(
+      () => '',
+    );
+    const sourceCommit = await git(['rev-parse', 'HEAD'], mainRepo);
+
+    const created = await ensureLocalWorktree({
+      mainRepoPath: mainRepo,
+      worktreePath: worktree,
+      branch: 'dev-oanew',
+      baseRef: 'origin/master_depart_iteng',
+      resetToRef: 'origin/master_depart_iteng',
+    });
+
+    expect(created.commit).toBe(sourceCommit);
+    expect(await git(['rev-parse', 'HEAD'], worktree)).toBe(sourceCommit);
+  });
+
   it('copies a main index and rewrites meta for the worktree registry entry', async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-worktree-test-'));
     const mainRepo = path.join(tempRoot, 'main');
