@@ -838,7 +838,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     console.info(`[webhook] enqueue analyze repoPath=${resolvedRepoPath}`);
     const queued = webhookAnalyzeQueue.enqueue({
       key: resolvedRepoPath,
-      run: async () => {
+      run: async (releaseStructureSlot) => {
         const lockKey = getStoragePath(repoPath);
         const lockErr = acquireRepoLock(lockKey);
         if (lockErr) {
@@ -849,10 +849,21 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           }
           throw err;
         }
+        let releaseProgressListener: (() => void) | undefined;
         try {
           await beforeAnalyze?.();
           await ensureCocoaPodsDependencies(repoPath);
           job = startAnalyzeForPath(repoPath, params, true);
+          releaseProgressListener = jobManager.onProgress(job.id, (progress) => {
+            if (progress.phase === 'embeddings' && progress.percent >= 90) {
+              console.info(
+                `[webhook] analyze structure slot released jobId=${job?.id} repoPath=${resolvedRepoPath}`,
+              );
+              releaseStructureSlot();
+              releaseProgressListener?.();
+              releaseProgressListener = undefined;
+            }
+          });
           console.info(`[webhook] analyze started jobId=${job.id} repoPath=${resolvedRepoPath}`);
           await waitForAnalyzeJob(job.id);
           console.info(`[webhook] analyze completed jobId=${job.id} repoPath=${resolvedRepoPath}`);
@@ -860,6 +871,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           console.error(`[webhook] analyze failed repoPath=${resolvedRepoPath}:`, err);
           throw err;
         } finally {
+          releaseProgressListener?.();
           releaseRepoLock(lockKey);
         }
       },

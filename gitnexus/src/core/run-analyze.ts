@@ -272,7 +272,30 @@ export async function runFullAnalysis(
     progress('lbug', 60, 'Loading into Neo4j...');
     const { loadGraphToNeo4j } = await import('./neo4j/graph-loader.js');
     const stats = await loadGraphToNeo4j(projectNameInitial, pipelineResult.graph);
-    let embeddingCount = 0;
+    const graphMeta = {
+      repoPath,
+      lastCommit: currentCommit,
+      indexedAt: new Date().toISOString(),
+      branch:
+        options.registryBranch ?? (hasGitDir(repoPath) ? getCurrentBranch(repoPath) : undefined),
+      remoteUrl: hasGitDir(repoPath) ? getRemoteUrl(repoPath) : undefined,
+      stats: {
+        files: pipelineResult.totalFileCount,
+        nodes: stats.nodes,
+        edges: stats.edges,
+        communities: pipelineResult.communityResult?.stats.totalCommunities,
+        processes: pipelineResult.processResult?.stats.totalProcesses,
+        embeddings: 0,
+      },
+    };
+
+    progress('done', 89, 'Saving graph metadata...');
+    const projectName = await registerRepo(repoPath, graphMeta, {
+      name: options.registryName,
+      allowDuplicateName: options.allowDuplicateName,
+    });
+    await saveMeta(storagePath, graphMeta);
+    let finalMeta = graphMeta;
 
     if (shouldGenerateEmbeddings && stats.nodes <= EMBEDDING_NODE_LIMIT) {
       const { isHttpMode } = await import('./embeddings/http-client.js');
@@ -322,32 +345,22 @@ export async function runFullAnalysis(
         },
       );
 
-      embeddingCount = await countEmbeddings(projectNameInitial);
+      finalMeta = {
+        ...graphMeta,
+        indexedAt: new Date().toISOString(),
+        stats: {
+          ...graphMeta.stats,
+          embeddings: await countEmbeddings(projectNameInitial),
+        },
+      };
     }
 
     progress('done', 98, 'Saving metadata...');
-    const meta = {
-      repoPath,
-      lastCommit: currentCommit,
-      indexedAt: new Date().toISOString(),
-      branch:
-        options.registryBranch ?? (hasGitDir(repoPath) ? getCurrentBranch(repoPath) : undefined),
-      remoteUrl: hasGitDir(repoPath) ? getRemoteUrl(repoPath) : undefined,
-      stats: {
-        files: pipelineResult.totalFileCount,
-        nodes: stats.nodes,
-        edges: stats.edges,
-        communities: pipelineResult.communityResult?.stats.totalCommunities,
-        processes: pipelineResult.processResult?.stats.totalProcesses,
-        embeddings: embeddingCount,
-      },
-    };
-
-    const projectName = await registerRepo(repoPath, meta, {
+    await registerRepo(repoPath, finalMeta, {
       name: options.registryName,
       allowDuplicateName: options.allowDuplicateName,
     });
-    await saveMeta(storagePath, meta);
+    await saveMeta(storagePath, finalMeta);
     if (hasGitDir(repoPath)) {
       await addToGitignore(repoPath);
     }
@@ -356,7 +369,7 @@ export async function runFullAnalysis(
     return {
       repoName: projectName,
       repoPath,
-      stats: meta.stats,
+      stats: finalMeta.stats,
       ...(options.returnPipelineResult ? { pipelineResult } : {}),
     };
   }

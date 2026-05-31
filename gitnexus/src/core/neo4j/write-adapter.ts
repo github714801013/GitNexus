@@ -5,6 +5,7 @@ import {
   type NodeTableName,
   type RelType,
 } from 'gitnexus-shared';
+import neo4j from 'neo4j-driver';
 import { withNeo4jSession } from './driver.js';
 
 export interface Neo4jNodeInput {
@@ -23,7 +24,7 @@ const NODE_LABELS = new Set<string>(NODE_TABLES);
 const RELATIONSHIP_TYPES = new Set<string>(REL_TYPES);
 const CODE_NODE_LABEL = 'CodeNode';
 const WRITE_BATCH_SIZE = 500;
-const CLEAR_REPO_LABELS = [CODE_NODE_LABEL, EMBEDDING_TABLE_NAME] as const;
+const CLEAR_REPO_LABELS = [...NODE_TABLES, CODE_NODE_LABEL, EMBEDDING_TABLE_NAME] as const;
 
 const checkedNodeLabel = (label: string): NodeTableName => {
   if (!NODE_LABELS.has(label)) {
@@ -77,7 +78,7 @@ export const clearRepoIndex = async (repoId: string): Promise<void> => {
         deleted = await session.executeWrite(async (tx) => {
           const result = await tx.run(
             `MATCH (n:\`${label}\` {repoId: $repoId}) WITH n LIMIT $batchSize DETACH DELETE n RETURN count(n) AS deleted`,
-            { repoId, batchSize: WRITE_BATCH_SIZE },
+            { repoId, batchSize: neo4j.int(WRITE_BATCH_SIZE) },
           );
           return asNumber(result.records[0]?.get('deleted'));
         });
@@ -98,25 +99,27 @@ export const upsertNodes = async (repoId: string, nodes: Neo4jNodeInput[]): Prom
 
   const grouped = groupBy(nodes, (node) => node.label);
   await withNeo4jSession(async (session) => {
-    await session.executeWrite(async (tx) => {
-      for (const [label, bucket] of grouped) {
-        const safeLabel = checkedNodeLabel(label);
-        await tx.run(
-          `UNWIND $nodes AS row MERGE (n:\`${safeLabel}\`:\`${CODE_NODE_LABEL}\` {repoId: $repoId, id: row.id}) SET n += row.props`,
-          {
-            repoId,
-            nodes: bucket.map((node) => ({
-              id: String(node.properties.id),
-              props: {
-                ...node.properties,
+    for (const [label, bucket] of grouped) {
+      const safeLabel = checkedNodeLabel(label);
+      for (const chunk of chunksOf(bucket, WRITE_BATCH_SIZE)) {
+        await session.executeWrite(async (tx) => {
+          await tx.run(
+            `UNWIND $nodes AS row MERGE (n:\`${CODE_NODE_LABEL}\` {repoId: $repoId, id: row.id}) SET n:\`${safeLabel}\` SET n += row.props`,
+            {
+              repoId,
+              nodes: chunk.map((node) => ({
                 id: String(node.properties.id),
-                repoId,
-              },
-            })),
-          },
-        );
+                props: {
+                  ...node.properties,
+                  id: String(node.properties.id),
+                  repoId,
+                },
+              })),
+            },
+          );
+        });
       }
-    });
+    }
   });
 };
 
