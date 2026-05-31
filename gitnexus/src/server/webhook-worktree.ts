@@ -129,6 +129,7 @@ export interface WebhookAnalyzeRegistrationOptions {
   repoName: string;
   registryName: string;
   registryBranch: string;
+  allowDuplicateName: boolean;
 }
 
 export const buildGiteaWebhookAnalyzeOptions = (
@@ -147,6 +148,7 @@ export const buildGiteaWebhookAnalyzeOptions = (
     repoName,
     registryName: repoName,
     registryBranch: branch,
+    allowDuplicateName: true,
   };
 };
 

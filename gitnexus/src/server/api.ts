@@ -784,6 +784,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       embeddings?: boolean;
       registryName?: string;
       registryBranch?: string;
+      allowDuplicateName?: boolean;
     } = {},
     lockAlreadyHeld = false,
   ): ReturnType<JobManager['createJob']> => {
@@ -809,6 +810,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       embeddings: params.embeddings,
       registryName: params.registryName,
       registryBranch: params.registryBranch,
+      allowDuplicateName: params.allowDuplicateName,
     });
     return job;
   };
@@ -1030,6 +1032,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               embeddings: needsEmbeddings || undefined,
               registryName: entry.name,
               registryBranch,
+              allowDuplicateName: true,
             });
             queued.done.catch((analyzeErr) => {
               console.error(
@@ -1051,6 +1054,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             embeddings: needsEmbeddings || undefined,
             registryName: entry.name,
             registryBranch,
+            allowDuplicateName: true,
           });
           queued.done.catch((analyzeErr) => {
             console.error(
@@ -1070,6 +1074,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             embeddings: true,
             registryName: entry.name,
             registryBranch,
+            allowDuplicateName: true,
           });
           queued.done.catch((analyzeErr) => {
             console.error(

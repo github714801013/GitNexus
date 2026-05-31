@@ -75,6 +75,7 @@ describe('webhook worktree helpers', () => {
       repoName: 'oa-stock',
       registryName: 'oa-stock',
       registryBranch: 'release_9ji',
+      allowDuplicateName: true,
     });
     expect(() => buildGiteaWebhookAnalyzeOptions('group-logistics/oa-stock', '../dev')).toThrow(
       WebhookWorktreeError,
