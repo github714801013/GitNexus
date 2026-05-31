@@ -75,4 +75,41 @@ describe('WebhookAnalyzeQueue', () => {
     await duplicateTwo.done;
     expect(started).toEqual(['first', 'duplicate-two']);
   });
+
+  it('prioritizes the latest duplicate repo request before unrelated queued repos', async () => {
+    const queue = new WebhookAnalyzeQueue();
+    const first = deferred<void>();
+    const started: string[] = [];
+
+    const firstResult = queue.enqueue({
+      key: 'repo-a',
+      run: async () => {
+        started.push('first');
+        await first.promise;
+      },
+    });
+    const otherResult = queue.enqueue({
+      key: 'repo-b',
+      run: async () => {
+        started.push('other');
+      },
+    });
+    const duplicateResult = queue.enqueue({
+      key: 'repo-a',
+      run: async () => {
+        started.push('duplicate');
+      },
+    });
+
+    expect(otherResult.status).toBe('accepted');
+    expect(duplicateResult.status).toBe('deferred');
+    await Promise.resolve();
+    expect(started).toEqual(['first']);
+
+    first.resolve();
+    await firstResult.done;
+    await duplicateResult.done;
+    await otherResult.done;
+    expect(started).toEqual(['first', 'duplicate', 'other']);
+  });
 });

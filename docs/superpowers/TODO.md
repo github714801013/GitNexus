@@ -32,3 +32,38 @@
 - [x] 查询路径更新：Neo4j repo-less `query` 直接返回跨库 discovery 结果，不再按候选 repo 循环调用单仓库 `query`。
 - [x] 初始化熔断：Neo4j 后端下 `ensureInitialized()` 直接返回，不初始化 LadybugDB 文件库。
 - [x] 验证：`npm test -- test/unit/neo4j-cross-repo-query.test.ts test/unit/tools.test.ts`、`npx tsc --noEmit`、`git diff --check` 通过。
+
+## Patch: Neo4j CodeNode 端点索引与关系事务拆批
+- [x] 技能激活幂等检查：已读取 `dev-spec-gen`、`using-superpowers`、`writing-plans`、`systematic-debugging`、`test-driven-development`、`verification-before-completion`。
+- [x] 技术栈识别：`gitnexus/package.json`、`gitnexus/tsconfig.json`、`gitnexus/vitest.config.ts` 证明本次范围为 TypeScript/Node/Vitest。
+- [x] qmd Discovery：已初始化 qmd；关键词检索无命中，改用 `dev-spec-gen/references/*.md` 物理路径证据。
+- [x] 工作区审计：当前分支 `xiexiongkun/feat-pgvector-pg18-cross-repo-search`；既有未跟踪 payload/stackdump/旧 plan/spec 不纳入本次暂存。
+- [x] 计划文件：`docs/superpowers/plans/2026-05-31-neo4j-codenode-batching.md`。
+- [x] Bug Reproduction：红灯测试已验证当前缺少 `CodeNode` 约束、端点 label 匹配和事务拆批。
+- [x] 实现：`schema.ts` 增加共享 `CodeNode` 约束；`write-adapter.ts` 为代码节点增加共享 `CodeNode` 标签、用 `CodeNode` 匹配关系端点，并将关系写入拆成 500 条一批的事务。
+- [x] 验证：`npm test -- test/unit/neo4j-schema.test.ts test/unit/neo4j-write-adapter.test.ts` 通过，11 tests。
+- [x] 验证：`npm test -- analyze-api.test.ts test/unit/neo4j-schema.test.ts test/unit/neo4j-write-adapter.test.ts` 通过，22 tests。
+- [x] 验证：`npx tsc --noEmit` 通过。
+- [x] 验证：目标文件 `git diff --check` 通过。
+- [x] Red：新增 `clearRepoIndex` 删除拆批测试，验证旧版 label-free `MATCH (n {repoId}) DETACH DELETE n` 会失败。
+- [x] 实现：`clearRepoIndex` 按 `CodeNode` 与 `CodeEmbedding` label 分批删除，每批 500，避免删除阶段长事务和 label-free 扫描。
+- [x] 远端清理：终止 10 条 12 小时以上旧版 Neo4j 关系写入事务，复查仅剩当前 `SHOW TRANSACTIONS` 毫秒级事务。
+- [x] 远端二次清理：旧服务又产生 3 条 8-9 分钟旧版关系写入事务，已终止并杀掉 3 个旧版 `analyze-worker.js` 子进程。
+- [x] 部署尝试：`remote_deploy.sh` 本地 Docker build 成功生成镜像 `8c3acca...`，但 `docker save` / `docker save -o` 在本机卡住，完整镜像传输部署未完成。
+- [x] 热补上线：复制 `write-adapter.js`、`schema.js`、`api.js` 和 `dist/_shared` 到远端 `gitnexus-mcp-proxy` 容器并重启；`/health` 返回 ok。
+- [x] 远端复查：Neo4j `SHOW TRANSACTIONS` 只剩当前查询自身的毫秒级事务，未见旧版 label-free 写入事务。
+- [x] 复跑回归测试、类型检查和 staged diff 检查。
+- [x] 精确暂存本次文件并执行 `git diff --cached --name-only` 审计。
+
+## Patch: oa-stock Gitea webhook 分支索引
+- [x] 技术栈识别：`gitnexus/package.json`、`gitnexus/tsconfig.json`、`gitnexus/vitest.config.ts` 证明本次范围为 TypeScript/Node/Vitest。
+- [x] 影响分析：GitNexus MCP 未索引 GitNexus 本仓库，无法运行图影响分析；已用本地引用检索确认触达 `api.ts` 与 `webhook-worktree.ts`。
+- [x] Bug Reproduction：现场证据为 `/webhook/gitea` payload 分支 `release_9ji`，但 list_repos 中 `oa-stock` 仍显示 `dev` 且 stale；代码证据为 webhook analyze 入队未传 `registryName` / `registryBranch`。
+- [x] 计划文件：`docs/superpowers/plans/2026-05-31-oa-stock-webhook-branch.md`。
+- [x] 实现：Gitea webhook 与 startup repos.json 调度 analyze 时传递 `registryName` 与 `registryBranch`。
+- [x] 实现：analyze 早返回逻辑比较 `registryBranch` 与旧 meta 分支，分支变化时重新落库 meta/registry。
+- [x] 实现：启动巡检从 `repos.json` 读取目标分支覆盖旧 registry 分支；同仓库 deferred webhook 优先于其它待处理仓库执行。
+- [x] 实现：webhook 队列任务在 `finally` 释放 repo lock，避免同仓库 deferred 任务被误判 active 后跳过。
+- [x] 实现：worker 完成后由父进程兜底写入 meta/registry，确保 HTTP/MCP 清单使用当前工作树分支和 commit。
+- [x] 验证：`npm test -- test/unit/webhook-worktree.test.ts test/unit/analyze-api.test.ts test/unit/run-analyze.test.ts test/unit/webhook-analyze-queue.test.ts`、`npx tsc --noEmit`、`git diff --check` 通过。
+- [x] 部署验证：使用 `mcp_proxy_docker/remote_deploy.sh` 重新部署后触发 oa-stock webhook；meta、registry、HTTP `/api/repos`、MCP `list_repos` 均显示 `oa-stock` 分支为 `release_9ji`。

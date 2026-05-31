@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { NODE_TABLES, EMBEDDING_TABLE_NAME } from 'gitnexus-shared';
 
 describe('Neo4j schema statements', () => {
+  it('creates a shared CodeNode constraint for label-free relationship endpoint lookup', async () => {
+    const { getNeo4jSchemaStatements } = await import('../../src/core/neo4j/schema.js');
+
+    const statements = getNeo4jSchemaStatements({ embeddingDims: 1536 });
+
+    expect(statements.constraints).toContain(
+      'CREATE CONSTRAINT gitnexus_CodeNode_repo_id IF NOT EXISTS FOR (n:`CodeNode`) REQUIRE (n.repoId, n.id) IS UNIQUE',
+    );
+  });
+
   it('creates a repo-scoped uniqueness constraint for every code node label', async () => {
     const { getNeo4jSchemaStatements } = await import('../../src/core/neo4j/schema.js');
 

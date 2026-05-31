@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const txRun = vi.fn();
+const countResult = (deleted: number) => ({
+  records: [
+    {
+      get: () => deleted,
+    },
+  ],
+});
+const txRun = vi.fn(async () => countResult(0));
 const executeWrite = vi.fn(async (work: any) => work({ run: txRun }));
 const withNeo4jSession = vi.fn(async (work: any) => work({ executeWrite }));
 
@@ -13,14 +20,40 @@ describe('Neo4j write adapter', () => {
     vi.clearAllMocks();
   });
 
-  it('clears all indexed data for one repoId', async () => {
+  it('clears all indexed data for one repoId in label-scoped batches', async () => {
     const { clearRepoIndex } = await import('../../src/core/neo4j/write-adapter.js');
+    txRun
+      .mockResolvedValueOnce(countResult(500))
+      .mockResolvedValueOnce(countResult(1))
+      .mockResolvedValueOnce(countResult(12));
 
     await clearRepoIndex('repo-a');
 
-    expect(txRun).toHaveBeenCalledWith('MATCH (n {repoId: $repoId}) DETACH DELETE n', {
-      repoId: 'repo-a',
-    });
+    expect(txRun).toHaveBeenNthCalledWith(
+      1,
+      'MATCH (n:`CodeNode` {repoId: $repoId}) WITH n LIMIT $batchSize DETACH DELETE n RETURN count(n) AS deleted',
+      {
+        repoId: 'repo-a',
+        batchSize: 500,
+      },
+    );
+    expect(txRun).toHaveBeenNthCalledWith(
+      2,
+      'MATCH (n:`CodeNode` {repoId: $repoId}) WITH n LIMIT $batchSize DETACH DELETE n RETURN count(n) AS deleted',
+      {
+        repoId: 'repo-a',
+        batchSize: 500,
+      },
+    );
+    expect(txRun).toHaveBeenNthCalledWith(
+      3,
+      'MATCH (n:`CodeEmbedding` {repoId: $repoId}) WITH n LIMIT $batchSize DETACH DELETE n RETURN count(n) AS deleted',
+      {
+        repoId: 'repo-a',
+        batchSize: 500,
+      },
+    );
+    expect(executeWrite).toHaveBeenCalledTimes(3);
   });
 
   it('batch upserts nodes grouped by label', async () => {
@@ -33,7 +66,7 @@ describe('Neo4j write adapter', () => {
     ]);
 
     expect(txRun).toHaveBeenCalledWith(
-      'UNWIND $nodes AS row MERGE (n:`Function` {repoId: $repoId, id: row.id}) SET n += row.props',
+      'UNWIND $nodes AS row MERGE (n:`Function`:`CodeNode` {repoId: $repoId, id: row.id}) SET n += row.props',
       {
         repoId: 'repo-a',
         nodes: [
@@ -49,7 +82,7 @@ describe('Neo4j write adapter', () => {
       },
     );
     expect(txRun).toHaveBeenCalledWith(
-      'UNWIND $nodes AS row MERGE (n:`File` {repoId: $repoId, id: row.id}) SET n += row.props',
+      'UNWIND $nodes AS row MERGE (n:`File`:`CodeNode` {repoId: $repoId, id: row.id}) SET n += row.props',
       {
         repoId: 'repo-a',
         nodes: [
@@ -83,7 +116,7 @@ describe('Neo4j write adapter', () => {
     ]);
 
     expect(txRun).toHaveBeenCalledWith(
-      'UNWIND $relationships AS row MATCH (from {repoId: $repoId, id: row.fromId}) MATCH (to {repoId: $repoId, id: row.toId}) MERGE (from)-[r:`CALLS`]->(to) SET r += row.props',
+      'UNWIND $relationships AS row MATCH (from:`CodeNode` {repoId: $repoId, id: row.fromId}) MATCH (to:`CodeNode` {repoId: $repoId, id: row.toId}) MERGE (from)-[r:`CALLS`]->(to) SET r += row.props',
       {
         repoId: 'repo-a',
         relationships: [
@@ -95,6 +128,24 @@ describe('Neo4j write adapter', () => {
         ],
       },
     );
+  });
+
+  it('splits relationship writes into bounded transactions', async () => {
+    const { upsertRelations } = await import('../../src/core/neo4j/write-adapter.js');
+    const relationships = Array.from({ length: 1201 }, (_, i) => ({
+      type: 'CALLS',
+      fromId: `Function:caller-${i}`,
+      toId: `Function:callee-${i}`,
+      properties: { confidence: 1 },
+    }));
+
+    await upsertRelations('repo-a', relationships);
+
+    expect(executeWrite).toHaveBeenCalledTimes(3);
+    const relationshipBatchSizes = txRun.mock.calls.map(
+      ([, params]) => params.relationships.length,
+    );
+    expect(relationshipBatchSizes).toEqual([500, 500, 201]);
   });
 
   it('rejects unknown relationship types', async () => {

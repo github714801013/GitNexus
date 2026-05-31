@@ -119,6 +119,7 @@ export interface AnalyzeResult {
 
 type ExistingAnalyzeMeta = {
   lastCommit?: string;
+  branch?: string;
   stats?: {
     embeddings?: number;
   };
@@ -127,9 +128,12 @@ type ExistingAnalyzeMeta = {
 export function shouldReturnAlreadyUpToDate(
   existingMeta: ExistingAnalyzeMeta | null | undefined,
   currentCommit: string,
-  options: Pick<AnalyzeOptions, 'force' | 'embeddings'>,
+  options: Pick<AnalyzeOptions, 'force' | 'embeddings' | 'registryBranch'>,
 ): boolean {
   if (!existingMeta || options.force || existingMeta.lastCommit !== currentCommit) {
+    return false;
+  }
+  if (options.registryBranch && existingMeta.branch !== options.registryBranch) {
     return false;
   }
   if (currentCommit === '') {

@@ -72,7 +72,7 @@ export class WebhookAnalyzeQueue {
       const nextForKey = this.pendingByKey.get(key);
       if (nextForKey) {
         this.pendingByKey.delete(key);
-        this.queue.push(nextForKey);
+        this.queue.unshift(nextForKey);
       }
       this.drain();
     }

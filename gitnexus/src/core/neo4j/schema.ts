@@ -21,6 +21,7 @@ const SYMBOL_NAME_INDEX_LABELS = [
   'Route',
   'Tool',
 ] as const;
+const CODE_NODE_LABEL = 'CodeNode';
 
 const constraintForLabel = (label: string): string => {
   return `CREATE CONSTRAINT gitnexus_${label}_repo_id IF NOT EXISTS FOR (n:\`${label}\`) REQUIRE (n.repoId, n.id) IS UNIQUE`;
@@ -35,6 +36,7 @@ export const getNeo4jSchemaStatements = (
 ): Neo4jSchemaStatements => {
   const embeddingDims = options.embeddingDims ?? loadNeo4jConfig().embeddingDims;
   const constraints = [
+    constraintForLabel(CODE_NODE_LABEL),
     ...NODE_TABLES.map(constraintForLabel),
     constraintForLabel(EMBEDDING_TABLE_NAME),
   ];
