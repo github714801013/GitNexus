@@ -4,6 +4,7 @@ import {
   extractRepoName,
   getAuthenticatedGitUrl,
   getCloneDir,
+  isGitObjectDatabaseCorruption,
   validateGitUrl,
 } from '../../src/server/git-clone.js';
 
@@ -173,6 +174,29 @@ describe('git-clone', () => {
       } finally {
         if (original !== undefined) process.env.GITEA_TOKEN = original;
       }
+    });
+  });
+
+  describe('isGitObjectDatabaseCorruption', () => {
+    it('detects empty object and invalid index-pack errors', () => {
+      expect(
+        isGitObjectDatabaseCorruption(
+          new Error(
+            [
+              'error: object file .git/objects/c3/448ffb9738d9c3fdf12c7fff7be9f689348a6e is empty',
+              'fatal: cannot read existing object info f35ef1a57309847154a8316c0bb89868ed936a79',
+              'fatal: fetch-pack: invalid index-pack output',
+            ].join('\n'),
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not classify ordinary git failures as object corruption', () => {
+      expect(isGitObjectDatabaseCorruption(new Error('fatal: Authentication failed'))).toBe(false);
+      expect(isGitObjectDatabaseCorruption(new Error('fatal: Remote branch dev not found'))).toBe(
+        false,
+      );
     });
   });
 });

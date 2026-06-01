@@ -163,6 +163,29 @@ export interface CloneProgress {
   message: string;
 }
 
+class GitCommandError extends Error {
+  constructor(
+    message: string,
+    readonly args: string[],
+    readonly stderr: string,
+  ) {
+    super(message);
+    this.name = 'GitCommandError';
+  }
+}
+
+export function isGitObjectDatabaseCorruption(err: unknown): boolean {
+  const text =
+    err instanceof GitCommandError ? err.stderr : err instanceof Error ? err.message : String(err);
+  return /object file .* is empty/i.test(text) ||
+    /cannot read existing object info/i.test(text) ||
+    /invalid index-pack output/i.test(text) ||
+    /loose object .* is corrupt/i.test(text) ||
+    /fatal: bad object/i.test(text)
+    ? true
+    : false;
+}
+
 /**
  * Clone or pull a git repository.
  * If targetDir doesn't exist: git clone --depth 1
@@ -214,8 +237,16 @@ export async function cloneOrResetToBranch(
   if (exists) {
     onProgress?.({ phase: 'pulling', message: `Synchronizing ${branch}...` });
     await fs.rm(path.join(targetDir, '.git', 'index.lock'), { force: true });
-    for (const args of buildWebhookBranchSyncCommands(authenticatedUrl, branch)) {
-      await runGit(args, targetDir);
+    try {
+      for (const args of buildWebhookBranchSyncCommands(authenticatedUrl, branch)) {
+        await runGit(args, targetDir);
+      }
+    } catch (err) {
+      if (!isGitObjectDatabaseCorruption(err)) throw err;
+      console.warn(
+        `[git] detected corrupt object database; deleting and re-cloning webhook mirror targetDir=${targetDir}`,
+      );
+      await rebuildCorruptWebhookMirror(authenticatedUrl, targetDir, branch, onProgress);
     }
   } else {
     await fs.mkdir(path.dirname(targetDir), { recursive: true });
@@ -224,6 +255,39 @@ export async function cloneOrResetToBranch(
   }
 
   return targetDir;
+}
+
+async function rebuildCorruptWebhookMirror(
+  url: string,
+  targetDir: string,
+  branch: string,
+  onProgress?: (progress: CloneProgress) => void,
+): Promise<void> {
+  const metadataDir = await preserveGitNexusMetadata(targetDir);
+  try {
+    await fs.rm(targetDir, { recursive: true, force: true });
+    await fs.mkdir(path.dirname(targetDir), { recursive: true });
+    onProgress?.({ phase: 'cloning', message: `Re-cloning ${branch} after git corruption...` });
+    await runGit(['clone', '--depth', '1', '--branch', branch, url, targetDir]);
+    if (metadataDir) {
+      await fs.cp(metadataDir, path.join(targetDir, '.gitnexus'), { recursive: true, force: true });
+    }
+  } finally {
+    if (metadataDir) await fs.rm(metadataDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function preserveGitNexusMetadata(targetDir: string): Promise<string | undefined> {
+  const source = path.join(targetDir, '.gitnexus');
+  const exists = await fs.access(source).then(
+    () => true,
+    () => false,
+  );
+  if (!exists) return undefined;
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-meta-'));
+  const dest = path.join(tempDir, '.gitnexus');
+  await fs.cp(source, dest, { recursive: true, force: true });
+  return dest;
 }
 
 export function buildWebhookBranchSyncCommands(url: string, branch: string): string[][] {
