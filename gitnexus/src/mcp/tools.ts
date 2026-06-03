@@ -67,7 +67,13 @@ Returns results grouped by process (execution flow):
 - process_symbols: all symbols in those flows with file locations and module (functional area)
 - definitions: standalone types/interfaces not in any process
 
-Hybrid ranking: BM25 keyword + Semantic vector + Zoekt exact/regex search, merged and ranked by Reciprocal Rank Fusion (RRF).
+Hybrid ranking: BM25 keyword + semantic vector + optional Zoekt exact/full-text search, merged and ranked by Reciprocal Rank Fusion (RRF).
+
+SEARCH CHANNELS:
+- BM25/vector are the primary discovery channels for natural language, concepts, business rules, and graph-friendly symbol candidates.
+- Zoekt is only an auxiliary exact-source search channel. Use it for literal Chinese messages, hard-coded strings, config keys, exact symbol spellings, regex, or source text that may not be represented as graph symbols.
+- Zoekt results are text/file candidates, not relationship answers. After a concrete symbol/file is found, switch to context() or impact() for callers, callees, implements, overrides, field accesses, and blast radius.
+- Do not repeatedly use query/Zoekt to manually stitch a call chain when context() or impact() can expand the graph.
 
 QUERY LANGUAGE SPLIT: Prefer providing two search languages for mixed searches:
 - "query": plain natural language for BM25/vector discovery. Do not put Zoekt operators, quote-heavy DSL, OR/AND groups, or parentheses here.
@@ -90,7 +96,7 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
         zoekt: {
           type: 'string',
           description:
-            'Advanced exact-code search language: raw Zoekt DSL only. Use for exact phrases, symbol names, regex, boolean groups, and Chinese phrase matching. RULES: 1. Wrap exact Chinese phrases in double quotes (e.g., "成为会员"). 2. Spaces mean AND. 3. Use uppercase OR/AND/NOT for boolean logic. 4. Use parentheses for grouping. Pair complex Zoekt DSL with a separate plain "query" so vector search receives semantic text instead of DSL.',
+            'Auxiliary exact-source search language: raw Zoekt DSL only. Use for literal Chinese messages, hard-coded strings, config keys, exact symbol spellings, regex, boolean groups, or source text that may not be represented as graph symbols. Do not use Zoekt to manually follow callers/callees after a symbol is known; switch to context() or impact(). RULES: 1. Wrap exact Chinese phrases in double quotes (e.g., "成为会员"). 2. Spaces mean AND. 3. Use uppercase OR/AND/NOT for boolean logic. 4. Use parentheses for grouping. Pair complex Zoekt DSL with a separate plain "query" so vector search receives semantic text instead of DSL.',
         },
         task_context: {
           type: 'string',

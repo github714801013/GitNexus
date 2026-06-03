@@ -111,6 +111,12 @@ describe('GITNEXUS_TOOLS', () => {
     expect(queryTool.description).toContain('SMART DISCOVERY');
     expect(queryTool.description).toContain('omit "repo" by default for the first query');
     expect(queryTool.description).toContain('Single-file LadybugDB indexes are repo-scoped');
+    expect(queryTool.description).toContain('SEARCH CHANNELS');
+    expect(queryTool.description).toContain('BM25/vector are the primary discovery channels');
+    expect(queryTool.description).toContain(
+      'Zoekt is only an auxiliary exact-source search channel',
+    );
+    expect(queryTool.description).toContain('switch to context() or impact()');
     expect(queryTool.description).toContain('QUERY LANGUAGE SPLIT');
     expect(queryTool.description).toContain('uses "query" for semantic vector discovery');
     expect(queryTool.inputSchema.properties.zoekt.description).toContain('raw Zoekt DSL only');
@@ -139,6 +145,11 @@ describe('GITNEXUS_TOOLS', () => {
     expect(tool.inputSchema.properties.query.description).toContain('Plain natural-language');
     expect(tool.inputSchema.properties.query.description).toContain('Do NOT include Zoekt DSL');
     expect(tool.inputSchema.properties.query.description).toContain('Strongly recommended');
+    expect(tool.inputSchema.properties.zoekt.description).toContain('Auxiliary exact-source');
+    expect(tool.inputSchema.properties.zoekt.description).toContain('literal Chinese messages');
+    expect(tool.inputSchema.properties.zoekt.description).toContain(
+      'switch to context() or impact()',
+    );
     expect(tool.inputSchema.properties.zoekt.description).toContain('raw Zoekt DSL only');
     expect(tool.inputSchema.properties.zoekt.description).toContain('Pair complex Zoekt DSL');
   });

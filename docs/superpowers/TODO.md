@@ -84,3 +84,8 @@
 - [x] 影响分析：GitNexus MCP 未登记 `GitNexus` 仓库，无法运行图影响分析；线上证据为 `context(file_path=RefundMoneyServiceImpl.java)` 错命中 `RefundSmallproServiceImpl.submitCheck`。
 - [x] 实现：Neo4j `findSymbolContext/findImpact` 支持 `file_path/kind` 强过滤；本地 resolver 对 mock/宽松返回候选做内存路径强过滤；路径统一大小写和斜杠。
 - [x] 验证：新增同名方法 file_path 强消歧回归测试；Neo4j read/local context-impact 测试覆盖 hint 传递和 Cypher 参数。
+
+## Patch: query 工具搜索通道描述
+- [x] 需求定位：根据 BM25/vector/Zoekt 差异，明确 Zoekt 保留但仅作为精确源码搜索补强，不作为关系分析主入口。
+- [x] 实现：`query` 工具描述增加 `SEARCH CHANNELS`，说明 BM25/vector 是主发现通道，Zoekt 用于中文文案、硬编码字符串、配置 key、精确符号、regex 等源码文本；定位符号后转 `context/impact`。
+- [x] 测试：`tools.test.ts` 增加描述契约断言，防止 Zoekt 定位再次被描述成主检索入口。
