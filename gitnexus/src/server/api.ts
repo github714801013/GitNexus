@@ -77,6 +77,7 @@ import {
   parseGiteaWebhookRepo,
   parseAllowedEnvs,
   upsertWebhookRepoConfig,
+  type WebhookRepoConfigEntry,
 } from './webhook-worktree.js';
 
 const _require = createRequire(import.meta.url);
@@ -126,6 +127,93 @@ export const shouldScheduleStartupIncrementalAnalyze = (
 ): boolean => staleness.isStale && staleness.commitsBehind > 0;
 
 export const shouldRunStartupLbugHealthCheck = (): boolean => !isNeo4jBackendEnabled();
+
+const ENV_REPOS_FILE_RE = /^repos\.([A-Za-z0-9._-]+)\.json$/;
+
+export interface WebhookInspectionTarget {
+  fullName: string;
+  repoPath: string;
+  mainRepoPath: string;
+  cloneUrl?: string;
+  branch: string;
+  repoName: string;
+  registryName: string;
+  allowDuplicateName?: boolean;
+  env?: string;
+}
+
+export const getWebhookEnvReposFile = (projectsRoot: string, env: string): string => {
+  assertSafeSegment(env, 'env');
+  return path.join(projectsRoot, `repos.${env.toLowerCase()}.json`);
+};
+
+const readWebhookRepoEntries = async (reposFile: string): Promise<WebhookRepoConfigEntry[]> => {
+  try {
+    const raw = await fs.readFile(reposFile, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+export const loadWebhookInspectionTargets = async (
+  projectsRoot: string,
+): Promise<WebhookInspectionTarget[]> => {
+  const configFiles: Array<{ file: string; env?: string }> = [
+    { file: path.join(projectsRoot, 'repos.json') },
+  ];
+
+  try {
+    const names = await fs.readdir(projectsRoot);
+    for (const name of names.sort()) {
+      const match = ENV_REPOS_FILE_RE.exec(name);
+      if (!match) continue;
+      const env = match[1].toLowerCase();
+      assertSafeSegment(env, 'env');
+      configFiles.push({ file: path.join(projectsRoot, name), env });
+    }
+  } catch {
+    // repos.json is optional; plain project discovery still works without it.
+  }
+
+  const targets: WebhookInspectionTarget[] = [];
+  const seenPaths = new Set<string>();
+  for (const config of configFiles) {
+    const entries = await readWebhookRepoEntries(config.file);
+    for (const entry of entries) {
+      if (!entry || typeof entry.full_name !== 'string') continue;
+      const branch = typeof entry.branch === 'string' ? entry.branch : 'master';
+      const mainRepoPath = getGiteaWebhookRepoPath(projectsRoot, entry.full_name);
+      const cloneUrl = typeof entry.clone_url === 'string' ? entry.clone_url : undefined;
+      const analyzeOptions = buildGiteaWebhookAnalyzeOptions(entry.full_name, branch);
+
+      const projectName = path.basename(entry.full_name);
+      const registryName = config.env
+        ? buildRegistryName(config.env, projectName)
+        : analyzeOptions.registryName;
+      const repoPath = config.env
+        ? getManagedWorktreePath(mainRepoPath, config.env, projectName)
+        : mainRepoPath;
+      const resolvedRepoPath = path.resolve(repoPath);
+      if (seenPaths.has(resolvedRepoPath)) continue;
+      seenPaths.add(resolvedRepoPath);
+
+      targets.push({
+        fullName: entry.full_name,
+        repoPath,
+        mainRepoPath,
+        cloneUrl,
+        branch,
+        repoName: registryName,
+        registryName,
+        allowDuplicateName: config.env ? undefined : analyzeOptions.allowDuplicateName,
+        env: config.env,
+      });
+    }
+  }
+  return targets;
+};
 
 const pathExists = async (targetPath: string): Promise<boolean> =>
   fs.access(targetPath).then(
@@ -1106,31 +1194,36 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   const scheduleStartupWebhookRepos = async (): Promise<void> => {
     const projectsRoot = getProjectsRoot();
-    const reposFile = path.join(projectsRoot, 'repos.json');
-    let entries: any[] = [];
-    try {
-      const raw = await fs.readFile(reposFile, 'utf-8');
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) entries = parsed;
-    } catch {
-      return;
-    }
+    const targets = await loadWebhookInspectionTargets(projectsRoot);
 
-    for (const entry of entries) {
-      if (!entry || typeof entry.full_name !== 'string') continue;
-      const repoPath = getGiteaWebhookRepoPath(projectsRoot, entry.full_name);
-      const cloneUrl = typeof entry.clone_url === 'string' ? entry.clone_url : undefined;
-      const branch = typeof entry.branch === 'string' ? entry.branch : 'master';
-      const analyzeOptions = buildGiteaWebhookAnalyzeOptions(entry.full_name, branch);
+    for (const target of targets) {
       const queued = enqueueWebhookAnalyze(
-        repoPath,
-        { repoUrl: cloneUrl, ...analyzeOptions },
+        target.repoPath,
+        {
+          repoUrl: target.cloneUrl,
+          repoName: target.repoName,
+          registryName: target.registryName,
+          registryBranch: target.branch,
+          allowDuplicateName: target.allowDuplicateName,
+        },
         async () => {
-          if (cloneUrl) await cloneOrResetToBranch(cloneUrl, repoPath, branch);
+          if (!target.cloneUrl) return;
+          if (!target.env) {
+            await cloneOrResetToBranch(target.cloneUrl, target.repoPath, target.branch);
+            return;
+          }
+          await cloneOrResetToBranch(target.cloneUrl, target.mainRepoPath, target.branch);
+          await ensureLocalWorktree({
+            mainRepoPath: target.mainRepoPath,
+            worktreePath: target.repoPath,
+            branch: target.registryName,
+            baseRef: `origin/${target.branch}`,
+            resetToRef: `origin/${target.branch}`,
+          });
         },
       );
       queued.done.catch((err) => {
-        console.error(`Startup webhook indexing failed for ${entry.full_name}:`, err);
+        console.error(`Startup webhook indexing failed for ${target.fullName}:`, err);
       });
     }
   };
@@ -1144,21 +1237,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     indexHealthCheckRunning = true;
     const projectsRoot = getProjectsRoot();
     try {
-      const reposFile = path.join(projectsRoot, 'repos.json');
       const webhookBranchByPath = new Map<string, string>();
-      try {
-        const raw = await fs.readFile(reposFile, 'utf-8');
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          for (const entry of parsed) {
-            if (!entry || typeof entry.full_name !== 'string') continue;
-            const branch = typeof entry.branch === 'string' ? entry.branch : 'master';
-            const repoPath = getGiteaWebhookRepoPath(projectsRoot, entry.full_name);
-            webhookBranchByPath.set(path.resolve(repoPath), branch);
-          }
-        }
-      } catch {
-        // repos.json is optional; plain project discovery still works without it.
+      for (const target of await loadWebhookInspectionTargets(projectsRoot)) {
+        webhookBranchByPath.set(path.resolve(target.repoPath), target.branch);
       }
       const registeredBeforeSync = await listRegisteredRepos().catch((err) => {
         console.warn(`[webhook] ${source} registry sync skipped:`, err);
@@ -2059,7 +2140,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const repo = parseGiteaWebhookRepo(req.body);
       const projectsRoot = getProjectsRoot();
       const mainRepoPath = getGiteaWebhookRepoPath(projectsRoot, repo.fullName);
-      const reposFile = path.join(projectsRoot, 'repos.json');
+      const reposFile = getWebhookEnvReposFile(projectsRoot, env);
       const projectNameValue = path.basename(repo.fullName);
       const repoUrlValue = repo.cloneUrl;
       const sourceBranch = repo.branch || 'master';

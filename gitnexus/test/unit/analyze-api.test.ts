@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtemp, writeFile } from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { JobManager } from '../../src/server/analyze-job.js';
 import {
   isRepoAlreadyActiveError,
   isRepairableIndexError,
+  getWebhookEnvReposFile,
+  loadWebhookInspectionTargets,
   shouldScheduleStartupIncrementalAnalyze,
   shouldScheduleStartupEmbeddings,
   shouldScheduleStartupWebhookRepos,
@@ -163,5 +168,50 @@ describe('analyze API logic', () => {
     process.env.GITNEXUS_STARTUP_WEBHOOK_REPOS_ENABLED = 'true';
 
     expect(shouldScheduleStartupWebhookRepos()).toBe(true);
+  });
+
+  it('loads ordinary and env webhook repos as separate inspection targets', async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-webhook-targets-test-'));
+    await writeFile(
+      path.join(tempRoot, 'repos.json'),
+      JSON.stringify([
+        {
+          full_name: 'oa-java/oa-after',
+          clone_url: 'https://code.9ji.com/oa-java/oa-after.git',
+          branch: 'release_9ji',
+        },
+      ]),
+    );
+    await writeFile(
+      getWebhookEnvReposFile(tempRoot, 'dev'),
+      JSON.stringify([
+        {
+          full_name: 'oa-java/oa-after',
+          clone_url: 'https://code.9ji.com/oa-java/oa-after.git',
+          branch: 'dev',
+        },
+      ]),
+    );
+
+    const targets = await loadWebhookInspectionTargets(tempRoot);
+
+    expect(targets).toEqual([
+      expect.objectContaining({
+        fullName: 'oa-java/oa-after',
+        repoPath: path.join(tempRoot, 'oa-java', 'oa-after'),
+        branch: 'release_9ji',
+        repoName: 'oa-after',
+        registryName: 'oa-after',
+        env: undefined,
+      }),
+      expect.objectContaining({
+        fullName: 'oa-java/oa-after',
+        repoPath: path.join(tempRoot, 'oa-java', 'dev-oa-after'),
+        branch: 'dev',
+        repoName: 'dev-oa-after',
+        registryName: 'dev-oa-after',
+        env: 'dev',
+      }),
+    ]);
   });
 });
