@@ -323,6 +323,40 @@ describe('LocalBackend.callTool', () => {
     expect(result.symbol.filePath).toBe('src/App.tsx');
   });
 
+  it('context tool treats file_path as a hard disambiguation filter for same-name methods', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    (executeParameterized as any).mockResolvedValueOnce([
+      {
+        id: 'Method:RefundSmallproServiceImpl.submitCheck',
+        name: 'submitCheck',
+        type: 'Method',
+        filePath:
+          'oa-after-service/src/main/java/com/jiuji/oa/afterservice/refund/service/impl/RefundSmallproServiceImpl.java',
+        startLine: 10,
+        endLine: 20,
+      },
+      {
+        id: 'Method:RefundMoneyServiceImpl.submitCheck',
+        name: 'submitCheck',
+        type: 'Method',
+        filePath:
+          'oa-after-service/src/main/java/com/jiuji/oa/afterservice/refund/service/impl/RefundMoneyServiceImpl.java',
+        startLine: 30,
+        endLine: 40,
+      },
+    ]);
+
+    const result = await backend.callTool('context', {
+      name: 'submitCheck',
+      file_path: 'RefundMoneyServiceImpl.java',
+      kind: 'Method',
+    });
+
+    expect(result.status).toBe('found');
+    expect(result.symbol.uid).toBe('Method:RefundMoneyServiceImpl.submitCheck');
+    expect(result.symbol.filePath).toContain('RefundMoneyServiceImpl.java');
+  });
+
   it('context tool promotes top candidate via scoring when multiple rows survive DB pre-filter (#470)', async () => {
     // This test explicitly exercises the scored-promotion path (#470
     // review): both candidates satisfy the file_path hint (so DB

@@ -63,7 +63,10 @@ describe('LocalBackend context and impact with Neo4j backend', () => {
 
     const result = await (backend as any).context(repo, { name: 'handler' });
 
-    expect(findSymbolContext).toHaveBeenCalledWith('Repo A', 'handler', 10);
+    expect(findSymbolContext).toHaveBeenCalledWith('Repo A', 'handler', 10, {
+      filePath: undefined,
+      kind: undefined,
+    });
     expect(initLbug).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       status: 'found',
@@ -87,7 +90,10 @@ describe('LocalBackend context and impact with Neo4j backend', () => {
       maxDepth: 2,
     });
 
-    expect(findImpact).toHaveBeenCalledWith('Repo A', 'handler', 'upstream', 2);
+    expect(findImpact).toHaveBeenCalledWith('Repo A', 'handler', 'upstream', 2, {
+      filePath: undefined,
+      kind: undefined,
+    });
     expect(initLbug).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       target: { name: 'handler' },
@@ -104,6 +110,37 @@ describe('LocalBackend context and impact with Neo4j backend', () => {
           },
         ],
       },
+    });
+  });
+
+  it('passes file_path and kind hints to Neo4j context lookup', async () => {
+    const backend = new LocalBackend();
+
+    await (backend as any).context(repo, {
+      name: 'submitCheck',
+      file_path: 'RefundMoneyServiceImpl.java',
+      kind: 'Method',
+    });
+
+    expect(findSymbolContext).toHaveBeenCalledWith('Repo A', 'submitCheck', 10, {
+      filePath: 'RefundMoneyServiceImpl.java',
+      kind: 'Method',
+    });
+  });
+
+  it('passes file_path and kind hints to Neo4j impact lookup', async () => {
+    const backend = new LocalBackend();
+
+    await (backend as any).impact(repo, {
+      target: 'submitCheck',
+      direction: 'upstream',
+      file_path: 'RefundMoneyServiceImpl.java',
+      kind: 'Method',
+    });
+
+    expect(findImpact).toHaveBeenCalledWith('Repo A', 'submitCheck', 'upstream', 3, {
+      filePath: 'RefundMoneyServiceImpl.java',
+      kind: 'Method',
     });
   });
 

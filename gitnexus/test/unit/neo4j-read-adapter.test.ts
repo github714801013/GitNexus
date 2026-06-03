@@ -50,10 +50,37 @@ describe('Neo4j read adapter', () => {
       expect.objectContaining({
         repoId: 'repo-a',
         target: 'handler',
+        filePath: null,
+        kind: null,
       }),
     );
     const params = txRun.mock.calls[0][1];
     expect(params.limit.toNumber()).toBe(5);
+  });
+
+  it('finds symbol context with file path and kind filters', async () => {
+    txRun.mockResolvedValueOnce({
+      records: [record({ id: 'Method:target', name: 'submitCheck' })],
+    });
+    const { findSymbolContext } = await import('../../src/core/neo4j/read-adapter.js');
+
+    await findSymbolContext('repo-a', 'submitCheck', 10, {
+      filePath: 'RefundMoneyServiceImpl.java',
+      kind: 'Method',
+    });
+
+    expect(txRun).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "replace(toLower(coalesce(n.filePath, '')), '\\\\', '/') CONTAINS $filePath",
+      ),
+      expect.objectContaining({
+        repoId: 'repo-a',
+        target: 'submitCheck',
+        filePath: 'refundmoneyserviceimpl.java',
+        kind: 'Method',
+      }),
+    );
+    expect(txRun.mock.calls[0][0]).toContain('$kind IN labels(n)');
   });
 
   it('finds upstream impact with bounded depth', async () => {
@@ -65,6 +92,8 @@ describe('Neo4j read adapter', () => {
     expect(txRun).toHaveBeenCalledWith(expect.stringContaining('[*1..2]->(target'), {
       repoId: 'repo-a',
       target: 'Function:callee',
+      filePath: null,
+      kind: null,
     });
   });
 
@@ -77,6 +106,8 @@ describe('Neo4j read adapter', () => {
     expect(txRun).toHaveBeenCalledWith(expect.stringContaining('(source)-[*1..3]->'), {
       repoId: 'repo-a',
       target: 'Function:caller',
+      filePath: null,
+      kind: null,
     });
   });
 });

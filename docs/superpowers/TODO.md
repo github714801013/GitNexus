@@ -77,3 +77,10 @@
 - [x] 部署：使用 Git Bash 执行 `mcp_proxy_docker/remote_deploy.sh` 完成部署；为避免历史归档进入 Docker build context，已补充 `.dockerignore` 排除 `*.tar`、`*.tar.gz`、`*.tgz`、`*.zip`。
 - [x] 线上回归：远端 `/health` 正常，容器启动时间已更新；容器产物包含 `raw Zoekt DSL only` 描述；MCP 查询同时传 `query` 与 `zoekt` 返回多仓库结果，Zoekt 日志只使用 `zoekt` 字段 DSL。
 - [x] 验证：`npm test -- test/unit/tools.test.ts test/unit/neo4j-cross-repo-query.test.ts` 通过 31 tests；`npx tsc --noEmit` 通过；目标文件 `git diff --check` 通过。
+
+## Patch: context/impact file_path 强消歧
+- [x] 技能与规范：已读取 `dev-spec-gen/SKILL.md`；当前环境无独立 `superpowers:*` 技能入口，使用本地 TODO 与显式计划兜底。
+- [x] 技术栈识别：`gitnexus/package.json`、`gitnexus/tsconfig.json`、`gitnexus/test/unit/*.test.ts` 证明本次范围为 TypeScript/Node/Vitest。
+- [x] 影响分析：GitNexus MCP 未登记 `GitNexus` 仓库，无法运行图影响分析；线上证据为 `context(file_path=RefundMoneyServiceImpl.java)` 错命中 `RefundSmallproServiceImpl.submitCheck`。
+- [x] 实现：Neo4j `findSymbolContext/findImpact` 支持 `file_path/kind` 强过滤；本地 resolver 对 mock/宽松返回候选做内存路径强过滤；路径统一大小写和斜杠。
+- [x] 验证：新增同名方法 file_path 强消歧回归测试；Neo4j read/local context-impact 测试覆盖 hint 传递和 Cypher 参数。

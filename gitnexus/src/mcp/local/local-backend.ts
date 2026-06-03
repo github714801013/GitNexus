@@ -2440,7 +2440,7 @@ export class LocalBackend {
   ): number {
     let s = 0.5;
     if (hints.file_path && c.filePath && typeof c.filePath === 'string') {
-      if (c.filePath.toLowerCase().includes(hints.file_path.toLowerCase())) {
+      if (this.candidateMatchesFilePath(c.filePath, this.normalizeFilePathHint(hints.file_path))) {
         s += 0.4;
       }
     }
@@ -2458,6 +2458,16 @@ export class LocalBackend {
       s += (priority[c.kind] ?? 0) * 0.02;
     }
     return Math.min(1.0, s);
+  }
+
+  private normalizeFilePathHint(filePath: string | undefined): string {
+    return (filePath ?? '').trim().replace(/\\/g, '/').toLowerCase();
+  }
+
+  private candidateMatchesFilePath(candidateFilePath: string | undefined, hint: string): boolean {
+    if (!hint) return true;
+    const candidate = this.normalizeFilePathHint(candidateFilePath);
+    return candidate.includes(hint);
   }
 
   /**
@@ -2561,7 +2571,7 @@ export class LocalBackend {
     if (rows.length === 0) return { kind: 'not_found' };
 
     // Normalise row shape across object / tuple returns from LadybugDB.
-    const normalized = rows.map((r: any) => ({
+    let normalized = rows.map((r: any) => ({
       id: (r.id ?? r[0]) as string,
       name: (r.name ?? r[1]) as string,
       type: (r.type ?? r[2] ?? '') as string,
@@ -2570,6 +2580,14 @@ export class LocalBackend {
       endLine: (r.endLine ?? r[5]) as number,
       ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
     }));
+
+    const filePathHint = this.normalizeFilePathHint(hints.file_path);
+    if (filePathHint) {
+      normalized = normalized.filter((candidate) =>
+        this.candidateMatchesFilePath(candidate.filePath, filePathHint),
+      );
+      if (normalized.length === 0) return { kind: 'not_found' };
+    }
 
     // Enrich labels for any candidates where `labels(n)[0]` came back empty.
     // LadybugDB returns an empty string for that projection on certain node
@@ -2681,7 +2699,10 @@ export class LocalBackend {
     const { isNeo4jBackendEnabled } = await import('../../core/neo4j/config.js');
     if (isNeo4jBackendEnabled()) {
       const { findSymbolContext } = await import('../../core/neo4j/read-adapter.js');
-      const rows = await findSymbolContext(repo.name, uid || name || '', 10);
+      const rows = await findSymbolContext(repo.name, uid || name || '', 10, {
+        filePath: file_path,
+        kind,
+      });
       if (rows.length === 0) {
         return { error: `Symbol '${name || uid}' not found` };
       }
@@ -3502,7 +3523,10 @@ export class LocalBackend {
       const { target, direction } = params;
       const maxDepth = params.maxDepth || 3;
       const { findImpact } = await import('../../core/neo4j/read-adapter.js');
-      const rows = await findImpact(repo.name, params.target_uid || target, direction, maxDepth);
+      const rows = await findImpact(repo.name, params.target_uid || target, direction, maxDepth, {
+        filePath: params.file_path,
+        kind: params.kind,
+      });
       const byDepth: Record<string, any[]> = {};
 
       for (const row of rows) {
