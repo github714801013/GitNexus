@@ -10,6 +10,7 @@ REMOTE_USER="ji99"
 REMOTE_PATH="/home/ji99/Project/mcp_gitnexus_server"
 REGISTRY_URL="harbor.saas.ch999.cn:1088/common"
 IMAGE_NAME="gitnexus-mcp-proxy"
+KEYWORD_SUMMARY_CONTAINER="gitnexus-keyword-summary"
 TAR_FILE="gitnexus_noble_deploy.tar.gz"
 RAW_TAR_FILE="${TAR_FILE%.gz}"
 BUILDX_BUILDER="gitnexus-deploy-builder"
@@ -53,10 +54,14 @@ echo ""
 echo "=== 步骤 3: 传输镜像和配置到远端 ==="
 ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
     set -e
-    mkdir -p "${REMOTE_PATH}/models" /home/ji99/.gitnexus /home/ji99/.lbdb
+    mkdir -p "${REMOTE_PATH}/models" /home/ji99/.gitnexus /home/ji99/.lbdb /home/ji99/Project/gitnexus_keyword_summary/models
     if [ -f "${REMOTE_PATH}/repos.json" ]; then cp "${REMOTE_PATH}/repos.json" "${REMOTE_PATH}/repos.json.bak"; fi
     if [ -f /home/ji99/gitnexus/repos.json ]; then cp /home/ji99/gitnexus/repos.json /home/ji99/gitnexus/repos.json.bak; fi
     if [ -f /home/ji99/.gitnexus/registry.json ]; then cp /home/ji99/.gitnexus/registry.json "${REMOTE_PATH}/registry.json.bak"; fi
+
+    if [ ! -f /home/ji99/Project/gitnexus_keyword_summary/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf ]; then
+        echo "WARN: keyword summary model file is missing; GitNexus will fall back to raw embedding text if the summary service cannot start."
+    fi
 
     echo "Neo4j 模式不再备份 LadybugDB 索引 meta.json"
 EOF
@@ -77,8 +82,10 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" -T << EOF
     echo "停止并清理旧的独立容器 (如有)..."
     docker stop -t 30 "${IMAGE_NAME}" 2>/dev/null || true
     docker rm "${IMAGE_NAME}" 2>/dev/null || true
+    docker stop -t 30 "${KEYWORD_SUMMARY_CONTAINER}" 2>/dev/null || true
+    docker rm "${KEYWORD_SUMMARY_CONTAINER}" 2>/dev/null || true
 
-    echo "启动 GitNexus + Zoekt (docker compose)..."
+    echo "启动 GitNexus + Zoekt + Keyword Summary (docker compose)..."
     GITEA_TOKEN="${gitnexus_gitea_token}" \
     GITNEXUS_EMBEDDING_BATCH_SIZE="${GITNEXUS_EMBEDDING_BATCH_SIZE:-32}" \
     docker compose -f docker-compose.yml up -d

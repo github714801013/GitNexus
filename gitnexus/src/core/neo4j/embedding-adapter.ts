@@ -43,6 +43,7 @@ const toNumber = (value: any, fallback = 0): number => {
 };
 
 const EMBEDDABLE_LABEL_EXPRESSION = EMBEDDABLE_LABELS.map((label) => `\`${label}\``).join('|');
+export const DELETE_EMBEDDINGS_NODE_ID_BATCH_SIZE = 500;
 
 export const fetchExistingEmbeddingHashes = async (
   repoId: string,
@@ -128,12 +129,15 @@ export const deleteEmbeddingsForNodes = async (
   if (nodeIds.length === 0) return;
 
   await withNeo4jSession(async (session) => {
-    await session.executeWrite(async (tx) => {
-      await tx.run(
-        `MATCH (e:\`${EMBEDDING_TABLE_NAME}\` {repoId: $repoId}) WHERE e.nodeId IN $nodeIds DETACH DELETE e`,
-        { repoId, nodeIds },
-      );
-    });
+    for (let i = 0; i < nodeIds.length; i += DELETE_EMBEDDINGS_NODE_ID_BATCH_SIZE) {
+      const batchNodeIds = nodeIds.slice(i, i + DELETE_EMBEDDINGS_NODE_ID_BATCH_SIZE);
+      await session.executeWrite(async (tx) => {
+        await tx.run(
+          `MATCH (e:\`${EMBEDDING_TABLE_NAME}\` {repoId: $repoId}) WHERE e.nodeId IN $nodeIds DETACH DELETE e`,
+          { repoId, nodeIds: batchNodeIds },
+        );
+      });
+    }
   });
 };
 

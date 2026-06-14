@@ -104,6 +104,43 @@ services:
       retries: 5
     restart: always
 
+  # ─── 代码关键词摘要模型：为向量化前生成中文业务词摘要 ────────────────────────
+  keyword-summary:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    pull_policy: if_not_present
+    container_name: gitnexus-keyword-summary
+    ports:
+      - '955:8080'
+    volumes:
+      - /home/ji99/Project/gitnexus_keyword_summary/models:/models:ro
+    command:
+      [
+        '-m',
+        '/models/qwen2.5-coder-3b-instruct-q4_k_m.gguf',
+        '--host',
+        '0.0.0.0',
+        '--port',
+        '8080',
+        '-c',
+        '4096',
+        '-ngl',
+        '99',
+        '-np',
+        '2',
+        '--parallel',
+        '2',
+        '--cont-batching',
+        '--jinja',
+      ]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: always
+
   # ─── GitNexus MCP 代理 ────────────────────────────────────────────────────────
   gitnexus-mcp-proxy:
     image: gitnexus-mcp-proxy:latest
@@ -143,6 +180,12 @@ services:
       - GITNEXUS_STRUCTURE_PARALLEL_CONCURRENCY=${GITNEXUS_STRUCTURE_PARALLEL_CONCURRENCY:-2}
       - GITNEXUS_EMBEDDING_PARALLEL_CONCURRENCY=${GITNEXUS_EMBEDDING_PARALLEL_CONCURRENCY:-3}
       - GITNEXUS_EMBEDDING_REPAIR_CONCURRENCY=${GITNEXUS_EMBEDDING_REPAIR_CONCURRENCY:-3}
+      - GITNEXUS_KEYWORD_SUMMARY_ENABLED=${GITNEXUS_KEYWORD_SUMMARY_ENABLED:-true}
+      - GITNEXUS_KEYWORD_SUMMARY_URL=http://keyword-summary:8080/v1
+      - GITNEXUS_KEYWORD_SUMMARY_MODEL=${GITNEXUS_KEYWORD_SUMMARY_MODEL:-qwen2.5-coder-3b-keyword-summary}
+      - GITNEXUS_KEYWORD_SUMMARY_LANGUAGE=${GITNEXUS_KEYWORD_SUMMARY_LANGUAGE:-中文}
+      - GITNEXUS_KEYWORD_SUMMARY_MAX_CHARS=${GITNEXUS_KEYWORD_SUMMARY_MAX_CHARS:-6000}
+      - GITNEXUS_KEYWORD_SUMMARY_TIMEOUT_MS=${GITNEXUS_KEYWORD_SUMMARY_TIMEOUT_MS:-60000}
       - GITNEXUS_PARALLEL_ENTRY_STAGGER_MS=${GITNEXUS_PARALLEL_ENTRY_STAGGER_MS:-300000}
       - ZOEKT_ENDPOINTS=http://zoekt-webserver:6070
       - ZOEKT_TRIGGER_DIR=/data/zoekt-index/triggers
@@ -156,6 +199,8 @@ services:
         condition: service_started
       neo4j:
         condition: service_healthy
+      keyword-summary:
+        condition: service_started
     stop_grace_period: 5m
     restart: always
 

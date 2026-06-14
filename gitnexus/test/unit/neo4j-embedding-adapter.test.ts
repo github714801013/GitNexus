@@ -82,6 +82,30 @@ describe('Neo4j embedding adapter', () => {
     );
   });
 
+  it('deletes stale embedding rows in 500-nodeId transactions', async () => {
+    const { deleteEmbeddingsForNodes } = await import('../../src/core/neo4j/embedding-adapter.js');
+    const nodeIds = Array.from({ length: 1201 }, (_, index) => `Function:${index}`);
+
+    await deleteEmbeddingsForNodes('repo-a', nodeIds);
+
+    expect(executeWrite).toHaveBeenCalledTimes(3);
+    expect(txRun).toHaveBeenNthCalledWith(
+      1,
+      'MATCH (e:`CodeEmbedding` {repoId: $repoId}) WHERE e.nodeId IN $nodeIds DETACH DELETE e',
+      { repoId: 'repo-a', nodeIds: nodeIds.slice(0, 500) },
+    );
+    expect(txRun).toHaveBeenNthCalledWith(
+      2,
+      'MATCH (e:`CodeEmbedding` {repoId: $repoId}) WHERE e.nodeId IN $nodeIds DETACH DELETE e',
+      { repoId: 'repo-a', nodeIds: nodeIds.slice(500, 1000) },
+    );
+    expect(txRun).toHaveBeenNthCalledWith(
+      3,
+      'MATCH (e:`CodeEmbedding` {repoId: $repoId}) WHERE e.nodeId IN $nodeIds DETACH DELETE e',
+      { repoId: 'repo-a', nodeIds: nodeIds.slice(1000) },
+    );
+  });
+
   it('runs vector search and maps Neo4j records to semantic results', async () => {
     txRun.mockResolvedValueOnce({
       records: [

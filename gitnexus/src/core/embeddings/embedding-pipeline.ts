@@ -19,6 +19,7 @@ import {
   getCurrentDevice,
 } from './embedder.js';
 import { generateEmbeddingText } from './text-generator.js';
+import { buildKeywordSummaryPrefix, getKeywordSummaryHashSalt } from './keyword-summary.js';
 import { chunkNode, characterChunk } from './chunker.js';
 import { extractStructuralNames } from './structural-extractor.js';
 import {
@@ -73,7 +74,13 @@ export const contentHashForNode = (
     node.content,
     config,
   );
-  return createHash('sha1').update(EMBEDDING_TEXT_VERSION).update('\n').update(text).digest('hex');
+  return createHash('sha1')
+    .update(EMBEDDING_TEXT_VERSION)
+    .update('\n')
+    .update(getKeywordSummaryHashSalt())
+    .update('\n')
+    .update(text)
+    .digest('hex');
 };
 
 const getExistingEmbeddingInfo = (value: string | ExistingEmbeddingInfo): ExistingEmbeddingInfo =>
@@ -468,6 +475,11 @@ export const runEmbeddingPipeline = async (
 
         // Compute content hash once per node (re-use cached value for stale nodes)
         const hash = computedStaleHashes.get(node.id) ?? contentHashForNode(node, finalConfig);
+        const nodeSummaryPrefix = await buildKeywordSummaryPrefix(
+          node,
+          generateEmbeddingText(node, node.content, finalConfig),
+          hash,
+        );
 
         let chunks: Array<{ text: string; chunkIndex: number; startLine: number; endLine: number }>;
         if (isShort) {
@@ -503,7 +515,7 @@ export const runEmbeddingPipeline = async (
             chunk.chunkIndex,
             prevTail,
           );
-          allTexts.push(text);
+          allTexts.push(nodeSummaryPrefix ? `${nodeSummaryPrefix}\n\n${text}` : text);
           allUpdates.push({
             nodeId: node.id,
             chunkIndex: chunk.chunkIndex,

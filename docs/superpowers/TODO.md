@@ -89,3 +89,29 @@
 - [x] 需求定位：根据 BM25/vector/Zoekt 差异，明确 Zoekt 保留但仅作为精确源码搜索补强，不作为关系分析主入口。
 - [x] 实现：`query` 工具描述增加 `SEARCH CHANNELS`，说明 BM25/vector 是主发现通道，Zoekt 用于中文文案、硬编码字符串、配置 key、精确符号、regex 等源码文本；定位符号后转 `context/impact`。
 - [x] 测试：`tools.test.ts` 增加描述契约断言，防止 Zoekt 定位再次被描述成主检索入口。
+
+## Patch: 小模型中文业务词摘要接入 embedding
+- [x] 技能与规范：已读取 `dev-spec-gen/SKILL.md`、`workflow-guardrails.md`、`superpowers-integration-specs.md`、`general-specs.md`、`superpowers:brainstorming`。
+- [x] 技术栈识别：`gitnexus/package.json`、`gitnexus/tsconfig.json`、`gitnexus/vitest.config.ts` 证明本次范围为 TypeScript/Node/Vitest；部署范围为 `mcp_proxy_docker/remote_deploy.sh` 与 `docker-compose.yml`。
+- [x] 影响分析：当前会话未暴露 GitNexus MCP 工具，无法执行图影响分析；已用本地 `rg` 定位 `generateEmbeddingText`、`runEmbeddingPipeline`、HTTP embedding 配置和 remote deploy/compose 注入点。
+- [x] 设计：摘要模型作为可选旁路，默认失败回退原 embedding 文本；只对 Function/Method/Constructor/Class/Interface/Struct 长节点启用，短节点跳过。
+- [x] 实现：新增 OpenAI-compatible chat completions 摘要客户端，prompt 强制优先提取中文业务词；embedding 文本前追加 `[中文业务摘要]`，并按 `nodeId + contentHash + promptVersion` 做进程内缓存。
+- [x] 实现：`remote_deploy.sh` 创建模型目录、清理旧独立摘要容器；`docker-compose.yml` 纳管 `gitnexus-keyword-summary` 并给主服务注入摘要环境变量。
+- [x] 配置增强：新增 `GITNEXUS_KEYWORD_SUMMARY_LANGUAGE` 控制摘要输出语言，默认 `中文`；语言进入 hash salt 与缓存 key，切换语言后会重新生成摘要向量。
+- [x] 验证：`npm test -- test/unit/keyword-summary.test.ts test/unit/embedding-pipeline.test.ts` 通过，28 tests。
+- [x] 验证：`npx tsc --noEmit` 通过。
+- [x] 验证：`docker compose -f mcp_proxy_docker/docker-compose.yml config` 通过。
+- [x] 验证：`git diff --check` 通过。
+- [x] 线上部署：执行 `mcp_proxy_docker/remote_deploy.sh` 成功，本地构建镜像、传输远端、远端 `docker compose up -d` 完成；远端 `auto_verify.py` 返回 API 就绪并列出 26 个索引快照。
+- [x] 线上验证：`gitnexus-mcp-proxy` `/health` 200，`/api/repos` 200；`gitnexus-keyword-summary` healthy，`/health` 200；摘要接口冷请求约 57.34s、热请求约 0.45s，返回中文业务词；主容器已注入 `GITNEXUS_KEYWORD_SUMMARY_LANGUAGE=中文`。
+
+## Patch: Neo4j stale embedding 分批删除
+- [x] 问题证据：`small-oa` startup embedding repair 失败，Neo4j 报 `dbms.memory.transaction.total.max threshold reached`；现场 `dbms.memory.transaction.total.max=5.60GiB`，`small-oa` 约 106664 条 `CodeEmbedding`。
+- [x] 根因：`deleteEmbeddingsForNodes` 对所有 stale nodeIds 使用单个 Neo4j 写事务删除，摘要 hash salt 变化后大项目会一次性删除大量向量节点，超过单事务内存限制。
+- [x] 实现：新增 `DELETE_EMBEDDINGS_NODE_ID_BATCH_SIZE=500`，`deleteEmbeddingsForNodes` 按 500 个 nodeId 切片，每个切片独立 `executeWrite` 事务。
+- [x] 测试：`neo4j-embedding-adapter.test.ts` 覆盖 1201 个 nodeId 被拆成 500/500/201 三个事务。
+- [x] 验证：`npm test -- test/unit/neo4j-embedding-adapter.test.ts test/unit/server-search.test.ts` 通过，14 tests。
+- [x] 验证：`npx tsc --noEmit` 通过。
+- [x] 验证：`git diff --check` 通过。
+- [x] 线上部署：执行 `mcp_proxy_docker/remote_deploy.sh` 成功；远端 `auto_verify.py` 返回 API 就绪并列出 26 个索引快照。
+- [x] 线上验证：`gitnexus-mcp-proxy` `/health` 200；`gitnexus-keyword-summary` `/health` 200；远端编译产物包含 `DELETE_EMBEDDINGS_NODE_ID_BATCH_SIZE = 500` 与 `nodeIds.slice` 分批逻辑；部署后 10 分钟日志未再出现 `dbms.memory.transaction` 或 `Failed to delete stale`。

@@ -5,6 +5,7 @@ import {
   EMBEDDING_TEXT_VERSION,
 } from '../../src/core/embeddings/embedding-pipeline.js';
 import { generateEmbeddingText } from '../../src/core/embeddings/text-generator.js';
+import { getKeywordSummaryHashSalt } from '../../src/core/embeddings/keyword-summary.js';
 import type { EmbeddableNode, EmbeddingProgress } from '../../src/core/embeddings/types.js';
 import { DEFAULT_EMBEDDING_CONFIG, EMBEDDABLE_LABELS } from '../../src/core/embeddings/types.js';
 import { STALE_HASH_SENTINEL } from '../../src/core/lbug/schema.js';
@@ -39,6 +40,8 @@ describe('contentHashForNode', () => {
     const node = makeNode();
     const expected = createHash('sha1')
       .update(EMBEDDING_TEXT_VERSION)
+      .update('\n')
+      .update(getKeywordSummaryHashSalt())
       .update('\n')
       .update(generateEmbeddingText(node, node.content))
       .digest('hex');
